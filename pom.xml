@@ -8,7 +8,7 @@
     <artifactId>http2-parser</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <name>HTTP/2 Frame Parser</name>
-    <description>A lightweight, zero-copy HTTP/2 frame parser.</description>
+    <description>A lightweight HTTP/2 frame parser and HPACK decoder.</description>
 
     <properties>
         <maven.compiler.release>17</maven.compiler.release>
