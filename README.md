@@ -23,3 +23,10 @@ flow control, or validate stream lifecycle and negotiated settings.
 
 The default maximum payload size is 16,384 bytes. Use
 `new Http2FrameParser(maxFrameSize)` after a peer negotiates a larger size.
+
+The fixed client connection preface can be checked without allocation:
+
+```java
+boolean valid = Http2ConnectionPreface.isValid(bytes);
+boolean validRange = Http2ConnectionPreface.isValid(bytes, offset, 24);
+```

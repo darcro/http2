@@ -8,11 +8,80 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.HexFormat;
 import org.junit.jupiter.api.Test;
 
 class Http2FrameParserTest {
     private final Http2FrameParser parser = new Http2FrameParser();
+
+    @Test
+    void parsesCapturedSettingsAcknowledgement() throws Exception {
+        SettingsFrame frame = assertInstanceOf(SettingsFrame.class,
+                parser.parse(hex("000000040100000000")));
+
+        assertEquals(0, frame.length());
+        assertEquals(0, frame.streamId());
+        assertTrue(frame.ack());
+        assertTrue(frame.settings().isEmpty());
+    }
+
+    @Test
+    void identifiesCapturedTcpPacketAsNotBeingAnHttp2Frame() {
+        byte[] ethernetPacket = hex(
+                "8a7d409e521b927639bec18108004500004c8c72400040069d06"
+                        + "0a0900028ba27b86e2b60050a36a323ea431168b801800e51172"
+                        + "00000101080a44e561c5d4bcf256505249202a20485454502f32"
+                        + "2e300d0a0d0a534d0d0a0d0a");
+
+        ParseErrorException error = assertThrows(ParseErrorException.class,
+                () -> parser.parse(ethernetPacket));
+        assertEquals(ParseErrorReason.FRAME_SIZE_ERROR, error.reason());
+        assertTrue(Http2ConnectionPreface.isValid(ethernetPacket, 66, 24));
+        assertEquals("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
+                new String(ethernetPacket, 66, 24, StandardCharsets.US_ASCII));
+    }
+
+    @Test
+    void parsesCapturedHeadersFrameAndPreservesHpackFragment() throws Exception {
+        byte[] encoded = hex(
+                "0000c4010400000001886196dd6d5f4a044a436cca08017940bb"
+                        + "71905c682a62d1bf5f87497ca58ae819aa6c96df697e9403ca68"
+                        + "1fa50400bca059b8db3704253168df0f138bfe5b1ca11c720966"
+                        + "4bfcff52848fd24a8f0f0d023632408ff2b4632752d522d3947"
+                        + "216c5ac4a7f8602e0009c69bf7686aa69d29afcff7c8712954d"
+                        + "3a535f9f408bf2b4b60e92ac7ad263d48f89dd0e8c1ab6e4c5"
+                        + "934f408cf2b794216aec3a4a4498f57f8a0fda949e42c11d072"
+                        + "75f4090f2b10f524b52564faacab1eb498f523f85a8e8a8d2cb");
+
+        HeadersFrame frame = assertInstanceOf(HeadersFrame.class, parser.parse(encoded));
+
+        assertEquals(196, frame.length());
+        assertEquals(1, frame.streamId());
+        assertTrue(frame.endHeaders());
+        assertFalse(frame.endStream());
+        assertFalse(frame.padded());
+        assertFalse(frame.hasPriority());
+        assertEquals(196, frame.headerBlockFragment().length());
+        assertArrayEquals(Arrays.copyOfRange(encoded, 9, encoded.length),
+                frame.headerBlockFragment().toByteArray());
+    }
+
+    @Test
+    void parsesCapturedEndStreamDataFrame() throws Exception {
+        DataFrame frame = assertInstanceOf(DataFrame.class, parser.parse(hex(
+                "00003e000100000001557365722d6167656e743a202a0a446973"
+                        + "616c6c6f773a200a0a536974656d61703a202f2f6e6768747470"
+                        + "322e6f72672f736974656d61702e786d6c200a")));
+
+        assertEquals(62, frame.length());
+        assertEquals(1, frame.streamId());
+        assertTrue(frame.endStream());
+        assertEquals("User-agent: *\nDisallow: \n\n"
+                        + "Sitemap: //nghttp2.org/sitemap.xml \n",
+                new String(frame.data().toByteArray(), StandardCharsets.US_ASCII));
+    }
 
     @Test
     void parsesUnpaddedData() throws Exception {
@@ -297,5 +366,9 @@ class Http2FrameParserTest {
             result[9 + i] = (byte) payload[i];
         }
         return result;
+    }
+
+    private static byte[] hex(String value) {
+        return HexFormat.of().parseHex(value);
     }
 }
