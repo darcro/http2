@@ -1,57 +1,36 @@
 # HTTP/2 Frame Parser
 
-A small Java 17 library for parsing one complete HTTP/2 frame from its wire
-representation. It supports all frame types defined by RFC 9113 and returns
-unknown extension types without interpreting their payloads.
+A dependency-free Java 17 library for parsing HTTP/2 frames and decoding HPACK
+header blocks. It supports every frame type defined by RFC 9113, preserves
+unknown extension frames, validates the HTTP/2 client preface, and implements
+stateful RFC 7541 HPACK decoding.
 
 ```java
-Http2FrameParser parser = new Http2FrameParser();
-Http2Frame frame = parser.parse(wireBytes);
+Http2Frame frame = new Http2FrameParser().parse(wireBytes);
 
 if (frame instanceof DataFrame data) {
-    byte firstByte = data.data().byteAt(0);
+    byte[] content = data.data().toByteArray();
 }
 ```
 
-Parsing is zero-copy: payloads are exposed as read-only `ByteSequence` views.
-Do not modify the input array while a parsed frame is in use. Call
-`ByteSequence.toByteArray()` when an independently owned copy is required.
+## Documentation
 
-The parser validates frame-local structure and semantics. It intentionally does
-not track connection state, apply flow control, or validate stream lifecycle and
-negotiated settings.
+- [Simple usage guide](docs/usage.md) — installation, frame parsing, preface
+  validation, and basic HPACK decoding.
+- [Advanced configuration guide](docs/advanced.md) — limits, negotiated
+  settings, state management, zero-copy behavior, and error handling.
+- [Developer guide](docs/development.md) — architecture, protocol invariants,
+  tests, maintenance workflows, and extension points.
 
-The default maximum payload size is 16,384 bytes. Use
-`new Http2FrameParser(maxFrameSize)` after a peer negotiates a larger size.
+## Requirements
 
-The fixed client connection preface can be checked without allocation:
+- Java 17 or newer
+- Maven 3.8 or newer for building from source
 
-```java
-boolean valid = Http2ConnectionPreface.isValid(bytes);
-boolean validRange = Http2ConnectionPreface.isValid(bytes, offset, 24);
+Build and run the complete test suite with:
+
+```shell
+mvn clean verify
 ```
 
-## HPACK decoding
-
-`HpackDecoder` implements the stateful RFC 7541 decoding context. Use one
-instance for each inbound connection direction. It is separate from the frame
-parser and can decode a complete block directly:
-
-```java
-HpackDecoder decoder = new HpackDecoder();
-List<HpackHeaderField> fields = decoder.decode(headers.headerBlockFragment());
-```
-
-For field blocks split over CONTINUATION frames, feed every inbound frame to a
-connection-scoped assembler. It returns a value only when END_HEADERS completes
-the block:
-
-```java
-HpackFrameAssembler assembler = new HpackFrameAssembler(decoder);
-Optional<DecodedHeaderBlock> decoded = assembler.accept(frame);
-```
-
-Call `decoder.updateMaxDynamicTableSize(value)` when connection code applies a
-`SETTINGS_HEADER_TABLE_SIZE` change. Decoder and assembler instances are not
-thread-safe. A decoder becomes unusable after a decoding error; an assembler
-becomes unusable after either a decoding or frame-sequence error.
+The project has no runtime dependencies.
