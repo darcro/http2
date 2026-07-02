@@ -28,6 +28,27 @@ public final class HpackDecoder {
         this.config = Objects.requireNonNull(config, "config");
     }
 
+    /** Restores a healthy decoder under caller-supplied local resource limits. */
+    public static HpackDecoder restore(HpackDecoderSnapshot snapshot,
+                                       HpackDecoderConfig config)
+            throws HpackSnapshotException {
+        Objects.requireNonNull(snapshot, "snapshot");
+        Objects.requireNonNull(config, "config");
+        validateSnapshotConfiguration(snapshot, config);
+
+        HpackDecoder decoder = new HpackDecoder(config);
+        decoder.dynamicTableLimit = snapshot.dynamicTableLimit();
+        decoder.maximumTableSize = snapshot.maximumTableSize();
+        decoder.pendingMinimum = snapshot.pendingMinimum().orElse(-1);
+        for (HpackDynamicTableEntry entry : snapshot.dynamicTableEntries()) {
+            HpackTables.Entry restored = new HpackTables.Entry(
+                    entry.nameBytes(), entry.valueBytes());
+            decoder.dynamicTable.add(restored);
+            decoder.dynamicTableSize += restored.size();
+        }
+        return decoder;
+    }
+
     public HpackDecoderConfig config() {
         return config;
     }
@@ -42,6 +63,19 @@ public final class HpackDecoder {
 
     public int maxDynamicTableSize() {
         return maximumTableSize;
+    }
+
+    /** Captures immutable state at the boundary between decode calls. */
+    public HpackDecoderSnapshot snapshot() {
+        if (failed) {
+            throw new IllegalStateException("Cannot snapshot a failed HPACK decoder");
+        }
+        List<HpackDynamicTableEntry> entries = new ArrayList<>(dynamicTable.size());
+        for (HpackTables.Entry entry : dynamicTable) {
+            entries.add(new HpackDynamicTableEntry(entry.name(), entry.value()));
+        }
+        return new HpackDecoderSnapshot(dynamicTableLimit, maximumTableSize,
+                pendingMinimum, entries);
     }
 
     /**
@@ -288,6 +322,41 @@ public final class HpackDecoder {
     private static HpackDecodingException error(HpackErrorReason reason, int offset,
                                                 String message) {
         return new HpackDecodingException(reason, offset, message);
+    }
+
+    private static void validateSnapshotConfiguration(HpackDecoderSnapshot snapshot,
+                                                      HpackDecoderConfig config)
+            throws HpackSnapshotException {
+        if (snapshot.dynamicTableLimit() < 0 || snapshot.maximumTableSize() < 0
+                || snapshot.dynamicTableLimit() > config.maxDynamicTableCapacity()
+                || snapshot.maximumTableSize() > config.maxDynamicTableCapacity()
+                || (snapshot.pendingMinimum().isPresent()
+                    && snapshot.pendingMinimum().getAsInt()
+                    > config.maxDynamicTableCapacity())) {
+            throw snapshotError("Snapshot table limits exceed local configuration");
+        }
+
+        long tableSize = 0;
+        for (HpackDynamicTableEntry entry : snapshot.dynamicTableEntries()) {
+            tableSize += (long) entry.name().length() + entry.value().length() + 32;
+            if (tableSize > snapshot.dynamicTableLimit()
+                    || tableSize > config.maxDynamicTableCapacity()) {
+                throw snapshotError("Snapshot dynamic entries exceed local configuration");
+            }
+        }
+        if (snapshot.pendingMinimum().isEmpty()
+                && snapshot.dynamicTableLimit() > snapshot.maximumTableSize()) {
+            throw snapshotError("Snapshot dynamic limit exceeds protocol maximum");
+        }
+        if (snapshot.pendingMinimum().isPresent()
+                && snapshot.pendingMinimum().getAsInt() > snapshot.maximumTableSize()) {
+            throw snapshotError("Snapshot pending reduction exceeds protocol maximum");
+        }
+    }
+
+    private static HpackSnapshotException snapshotError(String message) {
+        return new HpackSnapshotException(HpackSnapshotErrorReason.CONFIGURATION_LIMIT,
+                -1, message);
     }
 
     private static final class Input {

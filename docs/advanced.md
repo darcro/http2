@@ -126,6 +126,54 @@ duplicates are preserved.
 The assembler stores fragment views rather than concatenating them. The source
 frame arrays must therefore remain unchanged until the field block completes.
 
+## Persisting offline decoding state
+
+Decoder state can be saved between executions when decoding a captured stream.
+The resumed input must be from the same connection direction and begin at the
+exact next header-block position. Never restore a snapshot for a new HTTP/2
+connection because its compression context will not match.
+
+```java
+HpackDecoderSnapshot snapshot = decoder.snapshot();
+Files.write(snapshotPath, snapshot.toByteArray());
+
+HpackDecoderSnapshot loaded = HpackDecoderSnapshot.fromByteArray(
+        Files.readAllBytes(snapshotPath));
+HpackDecoder restored = HpackDecoder.restore(loaded, currentConfig);
+```
+
+Snapshot objects expose read-only limits, the pending SETTINGS reduction, and
+dynamic entries in newest-first index order. Restore always creates a new
+decoder under an explicit `HpackDecoderConfig`; state exceeding those current
+limits is rejected.
+
+An assembler snapshot includes its decoder plus any incomplete field block, so
+capture can pause between HEADERS/PUSH_PROMISE and CONTINUATION frames:
+
+```java
+HpackFrameAssemblerSnapshot snapshot = assembler.snapshot();
+byte[] persisted = snapshot.toByteArray();
+
+HpackFrameAssemblerSnapshot loaded =
+        HpackFrameAssemblerSnapshot.fromByteArray(persisted);
+HpackFrameAssembler restored =
+        HpackFrameAssembler.restore(loaded, currentConfig);
+HpackDecoder restoredDecoder = restored.decoder();
+```
+
+Incomplete fragments are copied into the snapshot. Snapshot calls are valid
+only on healthy objects and between synchronous `decode` or `accept` calls.
+
+The version 1 binary format uses `H2HP` magic, an object kind, reserved bytes,
+big-endian lengths, and exact end-of-input validation. It has no checksum,
+encryption, or authentication. Dynamic entries can contain cookies,
+authorization values, and other credentials, so applications must protect both
+snapshot confidentiality and integrity.
+
+`HpackSnapshotException` reports malformed, unsupported, or incompatible state
+through `HpackSnapshotErrorReason` and a byte offset. Restore-policy failures
+use offset `-1` because they are not tied to an encoded byte.
+
 ## HPACK values and sensitive fields
 
 RFC 7541 defines names and values as opaque octets. `HpackHeaderField` exposes

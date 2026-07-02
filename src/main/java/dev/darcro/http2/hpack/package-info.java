@@ -3,6 +3,8 @@
  * assembly.
  *
  * <p>The core decoder accepts complete compressed blocks. Frame assembly has a
- * one-way dependency on {@link dev.darcro.http2.frame} APIs.</p>
+ * one-way dependency on {@link dev.darcro.http2.frame} APIs. Decoder and
+ * assembler state can be captured in immutable versioned snapshots for offline
+ * continuation of the same compression context.</p>
  */
 package dev.darcro.http2.hpack;

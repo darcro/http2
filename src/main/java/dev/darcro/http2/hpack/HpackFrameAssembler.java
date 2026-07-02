@@ -31,8 +31,65 @@ public final class HpackFrameAssembler {
         this.decoder = Objects.requireNonNull(decoder, "decoder");
     }
 
+    /** Restores an assembler and its decoder under caller-supplied limits. */
+    public static HpackFrameAssembler restore(HpackFrameAssemblerSnapshot snapshot,
+                                              HpackDecoderConfig config)
+            throws HpackSnapshotException {
+        Objects.requireNonNull(snapshot, "snapshot");
+        Objects.requireNonNull(config, "config");
+        HpackDecoder decoder = HpackDecoder.restore(snapshot.decoderSnapshot(), config);
+        if (snapshot.incompleteBlock().length() > config.maxEncodedHeaderBlockSize()) {
+            throw new HpackSnapshotException(HpackSnapshotErrorReason.CONFIGURATION_LIMIT,
+                    -1, "Incomplete field block exceeds local configuration");
+        }
+
+        HpackFrameAssembler assembler = new HpackFrameAssembler(decoder);
+        if (snapshot.active()) {
+            HeaderBlockOrigin restoredOrigin = snapshot.origin().orElse(null);
+            if (restoredOrigin == null) {
+                throw invalidAssemblerSnapshot("Active snapshot has no origin");
+            }
+            int restoredPromisedStream = snapshot.promisedStreamId().orElse(0);
+            validateRestoredAssembler(snapshot, restoredOrigin, restoredPromisedStream);
+            assembler.origin = restoredOrigin;
+            assembler.streamId = snapshot.streamId();
+            assembler.endStream = snapshot.endStream();
+            assembler.promisedStreamId = restoredPromisedStream;
+            assembler.encodedLength = snapshot.incompleteBlock().length();
+            assembler.fragments.add(ByteSequence.wrap(snapshot.incompleteBlockBytes()));
+            assembler.active = true;
+        } else if (snapshot.origin().isPresent() || snapshot.streamId() != 0
+                || snapshot.endStream() || snapshot.promisedStreamId().isPresent()
+                || !snapshot.incompleteBlock().isEmpty()) {
+            throw invalidAssemblerSnapshot("Inactive snapshot contains field-block state");
+        }
+        return assembler;
+    }
+
+    public HpackDecoder decoder() {
+        return decoder;
+    }
+
     public boolean failed() {
         return failed;
+    }
+
+    /** Captures the decoder and any field block held between frame inputs. */
+    public HpackFrameAssemblerSnapshot snapshot() {
+        if (failed || decoder.failed()) {
+            throw new IllegalStateException("Cannot snapshot a failed HPACK assembler");
+        }
+        if (encodedLength > Integer.MAX_VALUE) {
+            throw new IllegalStateException("Incomplete field block is too large to snapshot");
+        }
+        byte[] incomplete = new byte[(int) encodedLength];
+        int offset = 0;
+        for (ByteSequence fragment : fragments) {
+            fragment.copyTo(incomplete, offset);
+            offset += fragment.length();
+        }
+        return new HpackFrameAssemblerSnapshot(decoder.snapshot(), active, origin,
+                streamId, endStream, promisedStreamId, incomplete);
     }
 
     public Optional<DecodedHeaderBlock> accept(Http2Frame frame)
@@ -140,5 +197,26 @@ public final class HpackFrameAssembler {
     private static HpackFrameSequenceException sequenceError(
             HpackFrameSequenceReason reason, int streamId, String message) {
         return new HpackFrameSequenceException(reason, streamId, message);
+    }
+
+    private static void validateRestoredAssembler(HpackFrameAssemblerSnapshot snapshot,
+                                                   HeaderBlockOrigin origin,
+                                                   int promisedStreamId)
+            throws HpackSnapshotException {
+        if (snapshot.streamId() <= 0) {
+            throw invalidAssemblerSnapshot("Active snapshot has an invalid stream ID");
+        }
+        if (origin == HeaderBlockOrigin.HEADERS && promisedStreamId != 0) {
+            throw invalidAssemblerSnapshot("HEADERS snapshot has a promised stream ID");
+        }
+        if (origin == HeaderBlockOrigin.PUSH_PROMISE
+                && (promisedStreamId <= 0 || snapshot.endStream())) {
+            throw invalidAssemblerSnapshot("Invalid PUSH_PROMISE snapshot metadata");
+        }
+    }
+
+    private static HpackSnapshotException invalidAssemblerSnapshot(String message) {
+        return new HpackSnapshotException(HpackSnapshotErrorReason.INVALID_ASSEMBLER_STATE,
+                -1, message);
     }
 }

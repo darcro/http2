@@ -144,4 +144,5 @@ if (completed.isPresent()) {
 
 Both parsing and HPACK APIs use checked exceptions because their inputs are
 untrusted wire data. See the [advanced guide](advanced.md) for configuration,
-error categories, SETTINGS handling, and failed-state behavior.
+error categories, SETTINGS handling, failed-state behavior, and resuming an
+offline capture from persisted HPACK state.

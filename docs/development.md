@@ -37,6 +37,10 @@ The code has three independent layers:
 3. `HpackFrameAssembler` observes frames, validates CONTINUATION sequencing,
    and presents complete blocks to `HpackDecoder`.
 
+Immutable `HpackDecoderSnapshot` and `HpackFrameAssemblerSnapshot` values form a
+persistence boundary for offline capture continuation. Restoration always
+creates new runtime objects under caller-supplied configuration.
+
 `Http2ConnectionPreface` is a separate stateless validator because the client
 preface is not an HTTP/2 frame.
 
@@ -97,6 +101,36 @@ decode trie during class initialization. Huffman decoding must reject:
 Do not generate or alter these constants from memory. Compare changes against
 RFC 7541 Appendix A or B and retain RFC-vector coverage.
 
+## Snapshot format and invariants
+
+`HpackSnapshotCodec` owns the dependency-free version 1 binary format. Do not
+use Java object serialization for persisted protocol state. The header contains
+`H2HP` magic, version, decoder/assembler kind, zeroed reserved bytes, and a
+big-endian payload length.
+
+Decoder payloads contain the encoder-selected table limit, applied protocol
+maximum, pending minimum reduction, and newest-first dynamic entries. Assembler
+payloads append active state, origin, stream metadata, and copied incomplete
+block bytes.
+
+Snapshot decoding must validate before constructing restorable state:
+
+- Every length is non-negative, overflow-safe, and within the supplied bytes;
+  trailing bytes are errors.
+- Dynamic entry size uses `name + value + 32` with aggregate `long` arithmetic.
+- Entries fit the encoded table limit.
+- The encoded table limit can exceed the protocol maximum only while a table
+  reduction is pending.
+- Inactive assemblers have no metadata or fragment bytes.
+- Active HEADERS and PUSH_PROMISE state obey stream and promised-stream rules.
+- Restore rechecks state against the caller's current resource configuration.
+
+Snapshot objects own copies of dynamic entries and incomplete fragments. Keep
+their constructors non-public so callers cannot bypass validation. The format
+has no checksum or cryptographic protection; applications own secure storage.
+Future formats must use a new version and retain version 1 decoding or reject it
+explicitly as unsupported.
+
 ## Resource and error behavior
 
 Resource limits are part of the security model, not convenience settings.
@@ -133,7 +167,7 @@ allocation measurement. Functional tests alone do not establish throughput.
 
 ## Test strategy
 
-The current suite contains four groups:
+The current suite contains five groups:
 
 - `Http2FrameParserTest` covers all RFC 9113 frame types, malformed frames,
   array ranges, zero-copy behavior, and supplied real-world frame samples.
@@ -144,6 +178,9 @@ The current suite contains four groups:
 - `HpackFrameAssemblerTest` covers parser integration, HEADERS and PUSH_PROMISE
   metadata, CONTINUATION sequencing, interleaving, resource errors, and failed
   states.
+- `HpackSnapshotTest` covers deterministic binary round trips, dynamic context
+  continuation, pending SETTINGS changes, mid-block HEADERS/PUSH_PROMISE state,
+  caller limits, immutability, corruption, and failed-state rejection.
 
 Protocol changes require both positive and negative tests. For HPACK stateful
 behavior, use multiple blocks on the same decoder so dynamic indexes and
