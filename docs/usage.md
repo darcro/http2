@@ -30,10 +30,10 @@ The library requires Java 17 and has no runtime dependencies.
 header followed by the number of payload bytes declared in that header.
 
 ```java
-import dev.darcro.http2.DataFrame;
-import dev.darcro.http2.Http2Frame;
-import dev.darcro.http2.Http2FrameParser;
-import dev.darcro.http2.ParseErrorException;
+import dev.darcro.http2.frame.DataFrame;
+import dev.darcro.http2.frame.Http2Frame;
+import dev.darcro.http2.frame.Http2FrameParser;
+import dev.darcro.http2.frame.ParseErrorException;
 
 Http2FrameParser parser = new Http2FrameParser();
 
@@ -77,7 +77,7 @@ The HTTP/2 client connection preface is not a frame. Validate its fixed 24-byte
 value separately:
 
 ```java
-import dev.darcro.http2.Http2ConnectionPreface;
+import dev.darcro.http2.frame.Http2ConnectionPreface;
 
 boolean valid = Http2ConnectionPreface.isValid(prefaceBytes);
 ```
@@ -99,9 +99,9 @@ When `END_HEADERS` is set, that frame contains the complete block and it can be
 decoded directly:
 
 ```java
-import dev.darcro.http2.HeadersFrame;
-import dev.darcro.http2.HpackDecoder;
-import dev.darcro.http2.HpackHeaderField;
+import dev.darcro.http2.frame.HeadersFrame;
+import dev.darcro.http2.hpack.HpackDecoder;
+import dev.darcro.http2.hpack.HpackHeaderField;
 
 HpackDecoder decoder = new HpackDecoder();
 
@@ -123,9 +123,9 @@ frames. Feed every inbound frame to the assembler so it can detect illegal
 interleaving:
 
 ```java
-import dev.darcro.http2.DecodedHeaderBlock;
-import dev.darcro.http2.HpackDecoder;
-import dev.darcro.http2.HpackFrameAssembler;
+import dev.darcro.http2.hpack.DecodedHeaderBlock;
+import dev.darcro.http2.hpack.HpackDecoder;
+import dev.darcro.http2.hpack.HpackFrameAssembler;
 import java.util.Optional;
 
 HpackDecoder decoder = new HpackDecoder();

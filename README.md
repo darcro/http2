@@ -5,7 +5,14 @@ header blocks. It supports every frame type defined by RFC 9113, preserves
 unknown extension frames, validates the HTTP/2 client preface, and implements
 stateful RFC 7541 HPACK decoding.
 
+The single JAR exposes frame APIs under `dev.darcro.http2.frame` and HPACK APIs
+under `dev.darcro.http2.hpack`.
+
 ```java
+import dev.darcro.http2.frame.DataFrame;
+import dev.darcro.http2.frame.Http2Frame;
+import dev.darcro.http2.frame.Http2FrameParser;
+
 Http2Frame frame = new Http2FrameParser().parse(wireBytes);
 
 if (frame instanceof DataFrame data) {

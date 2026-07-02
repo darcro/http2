@@ -8,8 +8,9 @@ API, tests, or release metadata.
 The project targets Java 17 and uses standard Maven layout:
 
 ```text
-src/main/java/dev/darcro/http2/   Production code
-src/test/java/dev/darcro/http2/   JUnit 5 tests
+src/main/java/dev/darcro/http2/frame/   Frame and parser code
+src/main/java/dev/darcro/http2/hpack/   HPACK and frame-assembly code
+src/test/java/dev/darcro/http2/         Package-aligned JUnit 5 tests
 docs/                             User and maintainer documentation
 pom.xml                           Build and artifact metadata
 ```
@@ -39,8 +40,10 @@ The code has three independent layers:
 `Http2ConnectionPreface` is a separate stateless validator because the client
 preface is not an HTTP/2 frame.
 
-Keep these boundaries intact. In particular, frame parsing must not implicitly
-decode HPACK or modify a connection-scoped compression table.
+The frame package has no dependency on the HPACK package. The HPACK package has
+a deliberate one-way dependency on frame byte views and frame models for
+`HpackFrameAssembler`. Keep this direction intact: frame parsing must not
+implicitly decode HPACK or modify a connection-scoped compression table.
 
 ## Frame parser invariants
 

@@ -4,6 +4,9 @@ This guide describes parser limits, HPACK resource controls, connection state,
 and failure handling. The defaults are suitable for small applications, but a
 complete HTTP/2 endpoint must integrate negotiated settings deliberately.
 
+Frame types are in `dev.darcro.http2.frame`; HPACK types are in
+`dev.darcro.http2.hpack`. Both packages are delivered by the same artifact.
+
 ## Frame parser configuration
 
 The default parser accepts payloads up to 16,384 bytes, the initial HTTP/2
