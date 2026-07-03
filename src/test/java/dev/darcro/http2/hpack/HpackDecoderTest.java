@@ -2,6 +2,7 @@ package dev.darcro.http2.hpack;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -224,6 +225,8 @@ class HpackDecoderTest {
 
     @Test
     void validatesConfigurationAndRanges() {
+        assertSame(HpackDecoderConfig.DEFAULT_CONFIG, HpackDecoderConfig.defaults());
+        assertSame(HpackDecoderConfig.DEFAULT_CONFIG, new HpackDecoder().config());
         assertThrows(IllegalArgumentException.class,
                 () -> new HpackDecoderConfig(4095, 10, 10));
         assertThrows(IllegalArgumentException.class,

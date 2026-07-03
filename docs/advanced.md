@@ -61,7 +61,7 @@ Default HPACK limits are intentionally bounded:
 | `maxEncodedHeaderBlockSize` | 65,536 | Maximum compressed bytes in one complete field block |
 | `maxDecodedHeaderListSize` | 65,536 | Maximum decoded list size, including 32 bytes overhead per field |
 
-Override them when creating the decoder:
+Override them when creating an assembler or a lower-level decoder:
 
 ```java
 HpackDecoderConfig config = new HpackDecoderConfig(
@@ -69,7 +69,8 @@ HpackDecoderConfig config = new HpackDecoderConfig(
         131_072,  // encoded block limit
         262_144); // decoded header-list limit
 
-HpackDecoder decoder = new HpackDecoder(config);
+HpackFrameAssembler assembler = new HpackFrameAssembler(config);
+HpackDecoder decoder = new HpackDecoder(config); // complete HPACK blocks only
 ```
 
 The dynamic-table capacity must be at least 4,096 because that is the initial
@@ -77,22 +78,29 @@ RFC 7541 table-size limit. Both block and header-list limits must be positive.
 The decoded header-list size is calculated as `name length + value length + 32`
 for each field, using decoded rather than Huffman-encoded lengths.
 
+`HpackDecoderConfig.DEFAULT_CONFIG` is the shared immutable default instance;
+`HpackDecoderConfig.defaults()` returns that same instance.
+
 Increasing limits increases the memory and CPU available to untrusted peers.
 Set them from application policy rather than directly from peer-provided
 values.
 
 ## Dynamic table and SETTINGS
 
-An `HpackDecoder` starts with an empty dynamic table and an allowed size of
-4,096 bytes. Use one decoder for each inbound compression context. In a normal
-client/server connection this means independent request and response decoders.
+An assembler's owned decoder starts with an empty dynamic table and an allowed
+size of 4,096 bytes. Use one assembler for each inbound compression context. A
+tool observing both connection directions therefore needs independent
+assemblers for requests and responses.
 
 When a locally advertised `SETTINGS_HEADER_TABLE_SIZE` change has taken effect
-according to the HTTP/2 SETTINGS acknowledgment rules, update the decoder:
+according to the HTTP/2 SETTINGS acknowledgment rules, update the assembler:
 
 ```java
-decoder.updateMaxDynamicTableSize(appliedHeaderTableSize);
+assembler.updateMaxDynamicTableSize(appliedHeaderTableSize);
 ```
+
+Lower-level users decoding complete HPACK blocks call the method with the same
+name on their `HpackDecoder`.
 
 The value cannot exceed `config.maxDynamicTableCapacity()`. After a reduction,
 the next encoded block must begin with a conforming HPACK table-size update.
@@ -103,14 +111,16 @@ than once between field blocks.
 `maxDynamicTableSize()` reports the latest protocol maximum supplied through
 `updateMaxDynamicTableSize`; it is not the current number of occupied bytes.
 
-The decoder deliberately does not accept `SettingsFrame` directly. Connection
-code remains responsible for endpoint direction, acknowledgment timing, and
-choosing which peer setting applies to which compression context.
+Neither API accepts `SettingsFrame` directly. Connection code remains
+responsible for endpoint direction, acknowledgment timing, and choosing which
+peer setting applies to which compression context.
 
 ## Stateful decoding and assembly
 
 `HpackDecoder` and `HpackFrameAssembler` are not thread-safe. Keep them confined
-to the connection event loop or protect access externally.
+to the connection event loop or protect access externally. The assembler owns
+its decoder exclusively and exposes configuration, dynamic-table metrics, and
+SETTINGS updates without exposing the live decoder.
 
 The assembler accepts every `Http2Frame`:
 
@@ -158,7 +168,6 @@ HpackFrameAssemblerSnapshot loaded =
         HpackFrameAssemblerSnapshot.fromByteArray(persisted);
 HpackFrameAssembler restored =
         HpackFrameAssembler.restore(loaded, currentConfig);
-HpackDecoder restoredDecoder = restored.decoder();
 ```
 
 Incomplete fragments are copied into the snapshot. Snapshot calls are valid

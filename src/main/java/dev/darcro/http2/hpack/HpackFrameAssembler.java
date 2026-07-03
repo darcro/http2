@@ -27,8 +27,18 @@ public final class HpackFrameAssembler {
     private boolean active;
     private boolean failed;
 
-    public HpackFrameAssembler(HpackDecoder decoder) {
-        this.decoder = Objects.requireNonNull(decoder, "decoder");
+    /** Creates an assembler with the default HPACK resource limits. */
+    public HpackFrameAssembler() {
+        this(new HpackDecoder());
+    }
+
+    /** Creates an assembler with the supplied HPACK resource limits. */
+    public HpackFrameAssembler(HpackDecoderConfig config) {
+        this(new HpackDecoder(Objects.requireNonNull(config, "config")));
+    }
+
+    private HpackFrameAssembler(HpackDecoder decoder) {
+        this.decoder = decoder;
     }
 
     /** Restores an assembler and its decoder under caller-supplied limits. */
@@ -66,8 +76,30 @@ public final class HpackFrameAssembler {
         return assembler;
     }
 
-    public HpackDecoder decoder() {
-        return decoder;
+    /** Returns the resource limits applied to the owned decoder. */
+    public HpackDecoderConfig config() {
+        return decoder.config();
+    }
+
+    /** Returns the bytes currently occupied by dynamic-table entries. */
+    public int dynamicTableSize() {
+        return decoder.dynamicTableSize();
+    }
+
+    /** Returns the latest applied protocol maximum for the dynamic table. */
+    public int maxDynamicTableSize() {
+        return decoder.maxDynamicTableSize();
+    }
+
+    /**
+     * Applies a SETTINGS_HEADER_TABLE_SIZE limit after connection code has
+     * determined that the setting takes effect.
+     */
+    public void updateMaxDynamicTableSize(int maximumSize) {
+        if (failed) {
+            throw new IllegalStateException("HPACK frame assembler is in a failed state");
+        }
+        decoder.updateMaxDynamicTableSize(maximumSize);
     }
 
     public boolean failed() {

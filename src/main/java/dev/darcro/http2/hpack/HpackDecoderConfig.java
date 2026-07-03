@@ -7,6 +7,10 @@ public record HpackDecoderConfig(int maxDynamicTableCapacity,
     public static final int DEFAULT_DYNAMIC_TABLE_CAPACITY = 4_096;
     public static final int DEFAULT_HEADER_BLOCK_SIZE = 65_536;
     public static final int DEFAULT_HEADER_LIST_SIZE = 65_536;
+    public static final HpackDecoderConfig DEFAULT_CONFIG = new HpackDecoderConfig(
+            DEFAULT_DYNAMIC_TABLE_CAPACITY,
+            DEFAULT_HEADER_BLOCK_SIZE,
+            DEFAULT_HEADER_LIST_SIZE);
 
     public HpackDecoderConfig {
         if (maxDynamicTableCapacity < DEFAULT_DYNAMIC_TABLE_CAPACITY) {
@@ -21,7 +25,6 @@ public record HpackDecoderConfig(int maxDynamicTableCapacity,
     }
 
     public static HpackDecoderConfig defaults() {
-        return new HpackDecoderConfig(DEFAULT_DYNAMIC_TABLE_CAPACITY,
-                DEFAULT_HEADER_BLOCK_SIZE, DEFAULT_HEADER_LIST_SIZE);
+        return DEFAULT_CONFIG;
     }
 }

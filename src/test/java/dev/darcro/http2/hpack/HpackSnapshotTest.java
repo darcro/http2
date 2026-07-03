@@ -94,7 +94,7 @@ class HpackSnapshotTest {
     @Test
     void assemblerRoundTripResumesAnIncompleteHeadersBlock() throws Exception {
         byte[] initialFragment = hex("8286");
-        HpackFrameAssembler assembler = new HpackFrameAssembler(new HpackDecoder());
+        HpackFrameAssembler assembler = new HpackFrameAssembler();
         HeadersFrame headers = new HeadersFrame(initialFragment.length,
                 Http2Flags.END_STREAM, 1, ByteSequence.wrap(initialFragment), null, 0);
         assertTrue(assembler.accept(headers).isEmpty());
@@ -119,13 +119,12 @@ class HpackSnapshotTest {
         assertEquals(4, block.fields().size());
         assertEquals("www.example.com", block.fields().get(3).valueUtf8());
         assertTrue(block.endStream());
-        assertFalse(restored.decoder().failed());
+        assertFalse(restored.failed());
     }
 
     @Test
     void idleAssemblerRoundTripRemainsUsable() throws Exception {
-        HpackFrameAssemblerSnapshot snapshot = new HpackFrameAssembler(
-                new HpackDecoder()).snapshot();
+        HpackFrameAssemblerSnapshot snapshot = new HpackFrameAssembler().snapshot();
         HpackFrameAssemblerSnapshot decoded = HpackFrameAssemblerSnapshot.fromByteArray(
                 snapshot.toByteArray());
         assertFalse(decoded.active());
@@ -135,12 +134,13 @@ class HpackSnapshotTest {
         HpackFrameAssembler restored = HpackFrameAssembler.restore(decoded,
                 HpackDecoderConfig.defaults());
         assertFalse(restored.failed());
+        assertEquals(HpackDecoderConfig.defaults(), restored.config());
     }
 
     @Test
     void assemblerRoundTripPreservesPushPromiseMetadata() throws Exception {
         byte[] initial = hex("8286");
-        HpackFrameAssembler assembler = new HpackFrameAssembler(new HpackDecoder());
+        HpackFrameAssembler assembler = new HpackFrameAssembler();
         assembler.accept(new PushPromiseFrame(initial.length, 0, 1, 2,
                 ByteSequence.wrap(initial), 0));
 
@@ -160,7 +160,7 @@ class HpackSnapshotTest {
 
     @Test
     void assemblerRestoreEnforcesEncodedBlockLimit() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler(new HpackDecoder());
+        HpackFrameAssembler assembler = new HpackFrameAssembler();
         byte[] fragment = hex("828684");
         assembler.accept(new HeadersFrame(fragment.length, 0, 1,
                 ByteSequence.wrap(fragment), null, 0));
@@ -177,7 +177,7 @@ class HpackSnapshotTest {
         assertThrows(HpackDecodingException.class, () -> decoder.decode(hex("80")));
         assertThrows(IllegalStateException.class, decoder::snapshot);
 
-        HpackFrameAssembler assembler = new HpackFrameAssembler(new HpackDecoder());
+        HpackFrameAssembler assembler = new HpackFrameAssembler();
         assertThrows(HpackDecodingException.class, () -> assembler.accept(
                 new HeadersFrame(1, Http2Flags.END_HEADERS, 1,
                         ByteSequence.wrap(hex("80")), null, 0)));
@@ -220,7 +220,7 @@ class HpackSnapshotTest {
                 () -> HpackFrameAssemblerSnapshot.fromByteArray(decoder));
         assertEquals(HpackSnapshotErrorReason.INVALID_KIND, wrongKind.reason());
 
-        byte[] assembler = new HpackFrameAssembler(new HpackDecoder())
+        byte[] assembler = new HpackFrameAssembler()
                 .snapshot().toByteArray();
         assembler[28] = 1; // active without origin or stream metadata
         HpackSnapshotException invalid = assertThrows(HpackSnapshotException.class,

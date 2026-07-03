@@ -34,8 +34,9 @@ The code has three independent layers:
    `Http2Frame` hierarchy. It performs no connection-state mutation.
 2. `HpackDecoder` consumes a complete compressed field block and owns one HPACK
    dynamic-table context.
-3. `HpackFrameAssembler` observes frames, validates CONTINUATION sequencing,
-   and presents complete blocks to `HpackDecoder`.
+3. `HpackFrameAssembler` exclusively owns an `HpackDecoder`, observes every
+   inbound frame, validates CONTINUATION sequencing, and decodes complete
+   blocks.
 
 Immutable `HpackDecoderSnapshot` and `HpackFrameAssemblerSnapshot` values form a
 persistence boundary for offline capture continuation. Restoration always
@@ -155,6 +156,13 @@ document when callers should expect it.
 The frame parser is zero-copy. The HPACK assembler also retains fragment views
 instead of concatenating them. Maintain these properties when refactoring.
 
+The assembler must retain exclusive ownership of its decoder. Its public
+facade may expose immutable configuration, table-size metrics, and negotiated
+limit updates, but must not expose the live decoder or accept one supplied by a
+caller. This prevents direct decode calls from mutating the compression context
+outside frame order. Keep direct `HpackDecoder` use available for integrations
+that already reassemble complete field blocks.
+
 HPACK literal decoding necessarily allocates decoded name and value arrays.
 Static and dynamic indexed entries may safely share decoder-owned immutable
 arrays. Never expose a mutable backing array through the public API.
@@ -177,7 +185,7 @@ The current suite contains five groups:
   limits, and the captured nghttpx response supplied for this project.
 - `HpackFrameAssemblerTest` covers parser integration, HEADERS and PUSH_PROMISE
   metadata, CONTINUATION sequencing, interleaving, resource errors, and failed
-  states.
+  states, including exclusive decoder ownership and its safe facade.
 - `HpackSnapshotTest` covers deterministic binary round trips, dynamic context
   continuation, pending SETTINGS changes, mid-block HEADERS/PUSH_PROMISE state,
   caller limits, immutability, corruption, and failed-state rejection.

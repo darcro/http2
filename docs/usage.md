@@ -92,44 +92,20 @@ boolean valid = Http2ConnectionPreface.isValid(buffer, offset,
 The input must begin at the HTTP/2 application layer. Ethernet, IP, and TCP
 headers are outside this library's scope.
 
-## Decode a complete HPACK block
+## Decode headers
 
-HEADERS and PUSH_PROMISE frames contain HPACK-encoded field-block fragments.
-When `END_HEADERS` is set, that frame contains the complete block and it can be
-decoded directly:
-
-```java
-import dev.darcro.http2.frame.HeadersFrame;
-import dev.darcro.http2.hpack.HpackDecoder;
-import dev.darcro.http2.hpack.HpackHeaderField;
-
-HpackDecoder decoder = new HpackDecoder();
-
-if (frame instanceof HeadersFrame headers && headers.endHeaders()) {
-    for (HpackHeaderField field : decoder.decode(headers.headerBlockFragment())) {
-        System.out.println(field.nameUtf8() + ": " + field.valueUtf8());
-    }
-}
-```
-
-HPACK is stateful. Reuse the same decoder for successive blocks received in one
-connection direction. Use a separate decoder for the opposite direction and
-for every other connection.
-
-## Decode fragmented headers
-
-Use `HpackFrameAssembler` when a field block can continue across CONTINUATION
-frames. Feed every inbound frame to the assembler so it can detect illegal
-interleaving:
+`HpackFrameAssembler` owns the stateful HPACK decoder and handles complete or
+fragmented field blocks. Use one assembler for each inbound connection
+direction and feed every inbound frame to it in wire order. Passing non-header
+frames is required so the assembler can detect illegal interleaving between a
+HEADERS or PUSH_PROMISE and its CONTINUATION frames.
 
 ```java
 import dev.darcro.http2.hpack.DecodedHeaderBlock;
-import dev.darcro.http2.hpack.HpackDecoder;
 import dev.darcro.http2.hpack.HpackFrameAssembler;
 import java.util.Optional;
 
-HpackDecoder decoder = new HpackDecoder();
-HpackFrameAssembler assembler = new HpackFrameAssembler(decoder);
+HpackFrameAssembler assembler = new HpackFrameAssembler();
 
 Http2Frame frame = parser.parse(wireBytes);
 Optional<DecodedHeaderBlock> completed = assembler.accept(frame);
@@ -141,6 +117,10 @@ if (completed.isPresent()) {
             System.out.println(field.nameUtf8() + ": " + field.valueUtf8()));
 }
 ```
+
+Do not create a separate decoder for frames handled by an assembler. Direct
+`HpackDecoder` use is available for lower-level integrations that already own
+complete HPACK field blocks.
 
 Both parsing and HPACK APIs use checked exceptions because their inputs are
 untrusted wire data. See the [advanced guide](advanced.md) for configuration,
