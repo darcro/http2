@@ -113,14 +113,24 @@ Optional<DecodedHeaderBlock> completed = assembler.accept(frame);
 if (completed.isPresent()) {
     DecodedHeaderBlock block = completed.get();
     System.out.println("headers for stream " + block.streamId());
-    block.fields().forEach(field ->
-            System.out.println(field.nameUtf8() + ": " + field.valueUtf8()));
+    block.method().ifPresent(method -> System.out.println("method=" + method));
+    block.status().ifPresent(status -> System.out.println("status=" + status));
+
+    block.headerFields().first("content-type").ifPresent(field ->
+            System.out.println("content-type=" + field.valueUtf8()));
 }
 ```
 
+The request pseudo-fields `method()`, `scheme()`, `authority()`, and `path()`,
+and the response pseudo-field `status()`, are cached when a block is created.
+For any other name, `headerFields().first(name)`, `all(name)`, and
+`contains(name)` perform ASCII case-insensitive lookup. `all(name)` preserves
+duplicate values in wire order.
+
 Do not create a separate decoder for frames handled by an assembler. Direct
 `HpackDecoder` use is available for lower-level integrations that already own
-complete HPACK field blocks.
+complete HPACK field blocks. Those callers can create the same lookup view with
+`HpackHeaderFields.copyOf(decoder.decode(headerBlock))`.
 
 Both parsing and HPACK APIs use checked exceptions because their inputs are
 untrusted wire data. See the [advanced guide](advanced.md) for configuration,

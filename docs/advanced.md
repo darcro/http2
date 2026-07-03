@@ -187,15 +187,30 @@ use offset `-1` because they are not tied to an encoded byte.
 
 RFC 7541 defines names and values as opaque octets. `HpackHeaderField` exposes
 them as `ByteSequence` values. `nameUtf8()` and `valueUtf8()` are convenience
-conversions and allocate strings; use the byte accessors when exact octets or
-lower allocation rates matter.
+conversions and allocate strings, but decode the underlying range without an
+intermediate byte-array copy. Use the byte accessors when exact octets or lower
+allocation rates matter.
+
+`DecodedHeaderBlock` caches UTF-8 values for `:method`, `:scheme`, `:authority`,
+`:path`, and `:status`. If malformed input repeats one of these pseudo-fields,
+the convenience accessor returns the first wire-order value and
+`hasDuplicatePseudoHeaders()` returns true. This is diagnostic information,
+not semantic validation.
+
+`HpackHeaderFields` remains an immutable ordered list. Its `first`, `all`, and
+`contains` methods compare names directly using ASCII case-insensitive rules;
+they do not allocate normalized names or construct a per-block map. A first or
+contains lookup is a linear scan, while `all` allocates an immutable result
+list when matches exist. Direct decoder users can wrap their list with
+`HpackHeaderFields.copyOf`.
 
 `sensitive()` is true when the peer used HPACK's never-indexed literal form.
 Intermediaries that later add encoding support must preserve that property.
 
-The decoder does not enforce HTTP/2 message semantics such as lowercase field
-names, pseudo-header ordering, forbidden connection fields, or request/response
-requirements. Those checks belong in a higher-level HTTP/2 message validator.
+The decoder and lookup view do not enforce HTTP/2 message semantics such as
+lowercase field names, pseudo-header ordering or uniqueness, forbidden
+connection fields, or request/response requirements. Those checks belong in a
+higher-level HTTP/2 message validator.
 
 ## Failure handling
 

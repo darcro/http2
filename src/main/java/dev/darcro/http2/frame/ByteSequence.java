@@ -1,5 +1,6 @@
 package dev.darcro.http2.frame;
 
+import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -62,6 +63,12 @@ public final class ByteSequence {
 
     public byte[] toByteArray() {
         return Arrays.copyOfRange(bytes, offset, offset + length);
+    }
+
+    /** Decodes this range without first copying it into a temporary array. */
+    public String decode(Charset charset) {
+        Objects.requireNonNull(charset, "charset");
+        return new String(bytes, offset, length, charset);
     }
 
     @Override

@@ -12,10 +12,10 @@ public record HpackHeaderField(ByteSequence name, ByteSequence value, boolean se
     }
 
     public String nameUtf8() {
-        return new String(name.toByteArray(), StandardCharsets.UTF_8);
+        return name.decode(StandardCharsets.UTF_8);
     }
 
     public String valueUtf8() {
-        return new String(value.toByteArray(), StandardCharsets.UTF_8);
+        return value.decode(StandardCharsets.UTF_8);
     }
 }

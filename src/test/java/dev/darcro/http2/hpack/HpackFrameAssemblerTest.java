@@ -30,6 +30,9 @@ class HpackFrameAssemblerTest {
         assertTrue(block.endStream());
         assertTrue(block.promisedStreamId().isEmpty());
         assertEquals(3, block.fields().size());
+        assertEquals("GET", block.method().orElseThrow());
+        assertEquals("http", block.scheme().orElseThrow());
+        assertEquals("/", block.path().orElseThrow());
     }
 
     @Test

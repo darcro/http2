@@ -4,7 +4,8 @@ A dependency-free Java 17 library for parsing HTTP/2 frames and decoding HPACK
 header blocks. It supports every frame type defined by RFC 9113, preserves
 unknown extension frames, validates the HTTP/2 client preface, and implements
 stateful RFC 7541 HPACK decoding, frame-aware header assembly, and offline
-snapshot and restore support.
+snapshot and restore support. Decoded blocks provide cached pseudo-fields and
+case-insensitive lookup for arbitrary header names.
 
 The single JAR exposes frame APIs under `dev.darcro.http2.frame` and HPACK APIs
 under `dev.darcro.http2.hpack`.

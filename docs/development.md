@@ -163,6 +163,12 @@ caller. This prevents direct decode calls from mutating the compression context
 outside frame order. Keep direct `HpackDecoder` use available for integrations
 that already reassemble complete field blocks.
 
+`HpackHeaderFields` wraps decoded output in an immutable ordered list. It scans
+once to cache only the five request/response pseudo-field values defined by RFC
+9113 Sections 8.3.1 and 8.3.2. Arbitrary name lookup remains a direct
+ASCII-insensitive scan so ordinary decoding does not allocate a map. Keep
+lookup separate from HTTP field-semantic validation.
+
 HPACK literal decoding necessarily allocates decoded name and value arrays.
 Static and dynamic indexed entries may safely share decoder-owned immutable
 arrays. Never expose a mutable backing array through the public API.
@@ -175,7 +181,7 @@ allocation measurement. Functional tests alone do not establish throughput.
 
 ## Test strategy
 
-The current suite contains five groups:
+The current suite contains six groups:
 
 - `Http2FrameParserTest` covers all RFC 9113 frame types, malformed frames,
   array ranges, zero-copy behavior, and supplied real-world frame samples.
@@ -186,6 +192,8 @@ The current suite contains five groups:
 - `HpackFrameAssemblerTest` covers parser integration, HEADERS and PUSH_PROMISE
   metadata, CONTINUATION sequencing, interleaving, resource errors, and failed
   states, including exclusive decoder ownership and its safe facade.
+- `HpackHeaderFieldsTest` covers pseudo-field caching, duplicate detection,
+  case-insensitive lookup, ordering, immutability, and ranged string decoding.
 - `HpackSnapshotTest` covers deterministic binary round trips, dynamic context
   continuation, pending SETTINGS changes, mid-block HEADERS/PUSH_PROMISE state,
   caller limits, immutability, corruption, and failed-state rejection.
