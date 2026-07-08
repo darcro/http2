@@ -46,3 +46,27 @@ mvn clean verify
 ```
 
 The project has no runtime dependencies.
+
+## GitHub Packages
+
+Tagged releases are published to GitHub Packages by the Maven workflow. A tag
+named `v0.1.0` publishes artifact version `0.1.0`.
+
+Consumers can add the package repository and dependency:
+
+```xml
+<repository>
+    <id>github</id>
+    <url>https://maven.pkg.github.com/darcro/http2</url>
+</repository>
+```
+
+```xml
+<dependency>
+    <groupId>dev.darcro.http2</groupId>
+    <artifactId>http2-parser</artifactId>
+    <version>0.1.0</version>
+</dependency>
+```
+
+GitHub Packages may require Maven credentials depending on package visibility.

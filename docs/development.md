@@ -26,6 +26,10 @@ The project intentionally has no runtime dependencies. JUnit is test-scoped.
 Avoid introducing a runtime library for operations that can remain small and
 protocol-specific.
 
+GitHub Actions runs the same Maven verification for pull requests and branch
+pushes. Version tags matching `v*` also publish the artifact to GitHub
+Packages.
+
 ## Architecture
 
 The code has three independent layers:
@@ -226,9 +230,70 @@ Before changing a public record, method, exception, or enum:
 4. Run all existing tests, not only the affected test class.
 5. Update the simple and advanced guides where behavior is user-visible.
 
-The Maven version is currently `0.1.0-SNAPSHOT`. Version changes, publishing
-metadata, source/Javadoc artifacts, signing, and release tags should be handled
-as an explicit release task rather than incidental maintenance.
+## Publishing a release artifact
+
+GitHub Packages publishing is driven by version tags. The repository keeps
+`pom.xml` at a snapshot version such as `0.1.0-SNAPSHOT`; the workflow derives
+the published release version from the tag inside the GitHub Actions runner.
+Do not manually change the POM to a release version for GitHub Packages
+publishing.
+
+Before publishing:
+
+1. Ensure the working tree is clean.
+2. Run local verification:
+
+   ```shell
+   mvn clean verify
+   git diff --check
+   ```
+
+3. Ensure the commit to release has been pushed to GitHub and the branch build
+   is green in the Actions tab.
+4. Confirm repository Actions permissions allow the workflow `GITHUB_TOKEN` to
+   write packages. The workflow declares `packages: write` and does not require
+   a custom secret for GitHub Packages.
+
+Create and push an annotated version tag:
+
+```shell
+git tag -a v0.1.0 -m "Release 0.1.0"
+git push origin v0.1.0
+```
+
+Tag names must start with `v` and must not include `-SNAPSHOT`. A tag named
+`v0.1.0` publishes Maven artifact
+`dev.darcro.http2:http2-parser:0.1.0`.
+
+After pushing the tag:
+
+1. Open the repository's GitHub Actions tab.
+2. Find the Maven workflow run for the tag.
+3. Confirm the `Build` job and `Publish to GitHub Packages` job both complete.
+4. Confirm the package appears under the repository or account Packages page.
+5. If publishing a public package, confirm package visibility and access are
+   configured as intended.
+
+Consumers use the GitHub Packages repository URL:
+
+```xml
+<repository>
+    <id>github</id>
+    <url>https://maven.pkg.github.com/darcro/http2</url>
+</repository>
+```
+
+GitHub Packages may require Maven credentials depending on package visibility.
+Consumers of private packages need a token with package read access.
+
+If a release fails before deployment, rerun the workflow after fixing the
+problem. If it fails after the artifact was deployed, do not reuse the same
+version unless the package version is intentionally deleted first; prefer a new
+patch version and tag.
+
+Maven Central publishing, source/Javadoc artifacts, signing, and release notes
+are out of scope for the current GitHub Packages workflow and should be handled
+as a separate release task.
 
 ## Reference specifications
 

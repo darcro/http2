@@ -5,18 +5,28 @@ payload, validating the client connection preface, and decoding headers.
 
 ## Add the library
 
-The current Maven coordinates are:
+Release artifacts are published to GitHub Packages. Add the package repository
+and dependency:
+
+```xml
+<repository>
+    <id>github</id>
+    <url>https://maven.pkg.github.com/darcro/http2</url>
+</repository>
+```
 
 ```xml
 <dependency>
     <groupId>dev.darcro.http2</groupId>
     <artifactId>http2-parser</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.1.0</version>
 </dependency>
 ```
 
-Until the artifact is published to a repository, clone this project and install
-it into your local Maven repository:
+GitHub Packages may require Maven credentials depending on package visibility.
+
+For local development from a checkout, install the current snapshot into your
+local Maven repository:
 
 ```shell
 mvn clean install
