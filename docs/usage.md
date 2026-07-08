@@ -113,6 +113,9 @@ Optional<DecodedHeaderBlock> completed = assembler.accept(frame);
 if (completed.isPresent()) {
     DecodedHeaderBlock block = completed.get();
     System.out.println("headers for stream " + block.streamId());
+    if (block.recovered()) {
+        System.out.println("partial header block: " + block.recoveryEvents());
+    }
     block.method().ifPresent(method -> System.out.println("method=" + method));
     block.status().ifPresent(status -> System.out.println("status=" + status));
 
@@ -131,6 +134,12 @@ Do not create a separate decoder for frames handled by an assembler. Direct
 `HpackDecoder` use is available for lower-level integrations that already own
 complete HPACK field blocks. Those callers can create the same lookup view with
 `HpackHeaderFields.copyOf(decoder.decode(headerBlock))`.
+
+When captured traffic starts in the middle of an existing HTTP/2 connection,
+the local HPACK dynamic table can be missing entries referenced by later
+frames. By default the decoder skips only those unavailable dynamic-table
+references, reports them through `recoveryEvents()`, and keeps processing later
+fields and frames. Other malformed HPACK data still raises a checked exception.
 
 Both parsing and HPACK APIs use checked exceptions because their inputs are
 untrusted wire data. See the [advanced guide](advanced.md) for configuration,

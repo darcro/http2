@@ -8,11 +8,19 @@ import java.util.OptionalInt;
 /** A decoded field block plus metadata from its originating HTTP/2 frame. */
 public record DecodedHeaderBlock(HeaderBlockOrigin origin, int streamId,
                                  boolean endStream, OptionalInt promisedStreamId,
-                                 List<HpackHeaderField> fields) {
+                                 List<HpackHeaderField> fields,
+                                 List<HpackRecoveryEvent> recoveryEvents) {
+    public DecodedHeaderBlock(HeaderBlockOrigin origin, int streamId,
+                              boolean endStream, OptionalInt promisedStreamId,
+                              List<HpackHeaderField> fields) {
+        this(origin, streamId, endStream, promisedStreamId, fields, List.of());
+    }
+
     public DecodedHeaderBlock {
         Objects.requireNonNull(origin, "origin");
         Objects.requireNonNull(promisedStreamId, "promisedStreamId");
         fields = HpackHeaderFields.copyOf(fields);
+        recoveryEvents = List.copyOf(recoveryEvents);
     }
 
     /** Returns the ordered fields with efficient name lookup operations. */
@@ -48,5 +56,10 @@ public record DecodedHeaderBlock(HeaderBlockOrigin origin, int streamId,
     /** Returns whether any recognized pseudo-field occurred more than once. */
     public boolean hasDuplicatePseudoHeaders() {
         return headerFields().hasDuplicatePseudoHeaders();
+    }
+
+    /** Returns whether best-effort recovery skipped any unavailable entries. */
+    public boolean recovered() {
+        return !recoveryEvents.isEmpty();
     }
 }

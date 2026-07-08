@@ -188,6 +188,62 @@ class HpackDecoderTest {
     }
 
     @Test
+    void skipsMissingDynamicIndexedFieldsByDefault() throws Exception {
+        HpackDecoder decoder = new HpackDecoder();
+
+        HpackDecodeResult result = decoder.decodeResult(hex("be82"));
+
+        assertTrue(result.recovered());
+        assertEquals(1, result.fields().size());
+        assertEquals(":method", result.fields().get(0).nameUtf8());
+        assertEquals("GET", result.fields().get(0).valueUtf8());
+        assertEquals(1, result.recoveryEvents().size());
+        HpackRecoveryEvent event = result.recoveryEvents().get(0);
+        assertEquals(HpackRecoveryReason.MISSING_DYNAMIC_TABLE_INDEX, event.reason());
+        assertEquals(0, event.offset());
+        assertEquals(62, event.index());
+
+        assertFields(decoder.decode(hex("82")), ":method", "GET");
+        assertFalse(decoder.failed());
+    }
+
+    @Test
+    void skipsLiteralWithMissingDynamicNameAndKeepsBlockAlignment() throws Exception {
+        HpackDecoder decoder = new HpackDecoder();
+
+        HpackDecodeResult result = decoder.decodeResult(hex("7e017884"));
+
+        assertTrue(result.recovered());
+        assertEquals(1, result.fields().size());
+        assertEquals(":path", result.fields().get(0).nameUtf8());
+        assertEquals("/", result.fields().get(0).valueUtf8());
+        assertEquals(1, result.recoveryEvents().size());
+        HpackRecoveryEvent event = result.recoveryEvents().get(0);
+        assertEquals(HpackRecoveryReason.MISSING_DYNAMIC_TABLE_NAME_INDEX,
+                event.reason());
+        assertEquals(0, event.offset());
+        assertEquals(62, event.index());
+        assertEquals(0, decoder.dynamicTableSize());
+        assertFalse(decoder.failed());
+    }
+
+    @Test
+    void canFailOnMissingDynamicIndexesForStrictConnections() {
+        HpackDecoder decoder = new HpackDecoder(new HpackDecoderConfig(
+                4096, 1024, 1024,
+                HpackDynamicTableRecoveryPolicy.FAIL_ON_MISSING));
+
+        HpackDecodingException invalidIndex = assertThrows(HpackDecodingException.class,
+                () -> decoder.decode(hex("be")));
+
+        assertEquals(HpackErrorReason.INVALID_INDEX, invalidIndex.reason());
+        assertTrue(decoder.failed());
+        HpackDecodingException failed = assertThrows(HpackDecodingException.class,
+                () -> decoder.decode(hex("82")));
+        assertEquals(HpackErrorReason.DECODER_FAILED, failed.reason());
+    }
+
+    @Test
     void rejectsTruncationIntegerOverflowAndInvalidHuffman() {
         assertError(HpackErrorReason.TRUNCATED_INPUT, "400561");
         assertError(HpackErrorReason.INTEGER_OVERFLOW, "3fffffffffff7f");
@@ -227,10 +283,14 @@ class HpackDecoderTest {
     void validatesConfigurationAndRanges() {
         assertSame(HpackDecoderConfig.DEFAULT_CONFIG, HpackDecoderConfig.defaults());
         assertSame(HpackDecoderConfig.DEFAULT_CONFIG, new HpackDecoder().config());
+        assertEquals(HpackDynamicTableRecoveryPolicy.SKIP_MISSING,
+                new HpackDecoderConfig(4096, 10, 10).dynamicTableRecoveryPolicy());
         assertThrows(IllegalArgumentException.class,
                 () -> new HpackDecoderConfig(4095, 10, 10));
         assertThrows(IllegalArgumentException.class,
                 () -> new HpackDecoderConfig(4096, 0, 10));
+        assertThrows(NullPointerException.class,
+                () -> new HpackDecoderConfig(4096, 10, 10, null));
         assertThrows(IndexOutOfBoundsException.class,
                 () -> new HpackDecoder().decode(new byte[2], 1, 2));
         assertThrows(IllegalArgumentException.class,

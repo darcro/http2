@@ -60,6 +60,7 @@ Default HPACK limits are intentionally bounded:
 | `maxDynamicTableCapacity` | 4,096 | Hard upper bound accepted by `updateMaxDynamicTableSize` |
 | `maxEncodedHeaderBlockSize` | 65,536 | Maximum compressed bytes in one complete field block |
 | `maxDecodedHeaderListSize` | 65,536 | Maximum decoded list size, including 32 bytes overhead per field |
+| `dynamicTableRecoveryPolicy` | `SKIP_MISSING` | Handling for dynamic-table indexes missing from the local capture context |
 
 Override them when creating an assembler or a lower-level decoder:
 
@@ -80,6 +81,18 @@ for each field, using decoded rather than Huffman-encoded lengths.
 
 `HpackDecoderConfig.DEFAULT_CONFIG` is the shared immutable default instance;
 `HpackDecoderConfig.defaults()` returns that same instance.
+
+The default recovery policy is `SKIP_MISSING`, which is intended for captured
+traffic analysis where decoding may begin after an HTTP/2 connection is already
+in progress. Use `FAIL_ON_MISSING` for strict endpoint-style behavior:
+
+```java
+HpackDecoderConfig strictConfig = new HpackDecoderConfig(
+        4_096,
+        65_536,
+        65_536,
+        HpackDynamicTableRecoveryPolicy.FAIL_ON_MISSING);
+```
 
 Increasing limits increases the memory and CPU available to untrusted peers.
 Set them from application policy rather than directly from peer-provided
@@ -132,6 +145,16 @@ The assembler accepts every `Http2Frame`:
 `DecodedHeaderBlock` retains the originating frame kind, stream ID, END_STREAM
 state, optional promised stream ID, and ordered decoded fields. Header order and
 duplicates are preserved.
+
+For lower-level complete-block decoding, `decode(...)` returns just the fields
+and `decodeResult(...)` returns fields plus recovery events:
+
+```java
+HpackDecodeResult result = decoder.decodeResult(headerBlock);
+if (result.recovered()) {
+    result.recoveryEvents().forEach(System.out::println);
+}
+```
 
 The assembler stores fragment views rather than concatenating them. The source
 frame arrays must therefore remain unchanged until the field block completes.
@@ -219,17 +242,28 @@ block, and an optional stream ID when decoding was initiated by the assembler.
 Reasons include invalid indexes, malformed Huffman data, truncated input,
 integer overflow, illegal table updates, and configured resource limits.
 
-An HPACK decoding failure can leave dynamic-table state partially changed and
-is connection-fatal in HTTP/2. The decoder is therefore poisoned after any
-decoding failure. Discard the connection and decoder; subsequent decode calls
-return `DECODER_FAILED`.
+By default, unavailable dynamic-table references are not treated as fatal
+because they commonly occur when analyzing captures that start mid-connection.
+An indexed field with a missing dynamic entry is skipped. A literal field whose
+name references a missing dynamic entry consumes its value to keep block
+alignment, skips the field, and does not insert it into the dynamic table.
+These lossy decisions are reported as `HpackRecoveryEvent` values on
+`HpackDecodeResult` or `DecodedHeaderBlock`.
+
+All other HPACK decoding failures can leave dynamic-table state partially
+changed and are connection-fatal in HTTP/2. The decoder is therefore poisoned
+after those failures. Discard the connection and decoder; subsequent decode
+calls return `DECODER_FAILED`. Configure
+`HpackDynamicTableRecoveryPolicy.FAIL_ON_MISSING` when missing dynamic indexes
+should also follow this strict failure path.
 
 `HpackFrameSequenceException` reports invalid CONTINUATION sequencing and its
 stream ID. A sequence error poisons the assembler because it represents a
 connection protocol error, but it does not mutate the underlying decoder.
 
-Do not attempt to recover either object with reflection or retained internal
-state. Create new instances for a new connection.
+Do not attempt to recover poisoned objects with reflection or retained internal
+state. Create new instances for a new connection or restore from a known-good
+snapshot.
 
 ## Deliberate boundaries
 

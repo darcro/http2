@@ -88,7 +88,10 @@ When adding an RFC-defined frame type:
 - Never-indexed literals set `HpackHeaderField.sensitive()`.
 - Decoded literal bytes are owned by the decoder output and do not alias the
   caller's compressed input.
-- Any decoding error permanently poisons the decoder.
+- Missing dynamic-table references are recoverable by default for capture
+  analysis. Indexed fields are skipped; literals with missing indexed names
+  still consume their values, are not emitted, and are not inserted.
+- Any non-recoverable decoding error permanently poisons the decoder.
 
 The internal `HpackTables` class contains the RFC static table. `HpackHuffman`
 contains all 257 Appendix B codes, including EOS, and constructs an immutable
@@ -151,6 +154,12 @@ as null references, invalid array ranges, or invalid configuration values.
 Adding a reason enum value is a public API change. Add a targeted test and
 document when callers should expect it.
 
+`HpackRecoveryEvent` is diagnostic rather than exceptional. Use it only when
+the representation boundary is known and later bytes can still be decoded
+safely. Currently that means unavailable dynamic-table indexes. Do not use
+recovery events for truncation, Huffman failures, integer overflow, illegal
+table-size updates, or other cases where block alignment is not reliable.
+
 ## Performance and ownership
 
 The frame parser is zero-copy. The HPACK assembler also retains fragment views
@@ -188,10 +197,12 @@ The current suite contains six groups:
 - `Http2ConnectionPrefaceTest` covers exact and ranged preface validation.
 - `HpackDecoderTest` covers all RFC 7541 Appendix C request/response sequences,
   static and dynamic tables, Huffman decoding, malformed data, configured
-  limits, and the captured nghttpx response supplied for this project.
+  limits, strict and best-effort missing-index behavior, and the captured
+  nghttpx response supplied for this project.
 - `HpackFrameAssemblerTest` covers parser integration, HEADERS and PUSH_PROMISE
   metadata, CONTINUATION sequencing, interleaving, resource errors, and failed
-  states, including exclusive decoder ownership and its safe facade.
+  states, including exclusive decoder ownership, missing-index recovery, and
+  its safe facade.
 - `HpackHeaderFieldsTest` covers pseudo-field caching, duplicate detection,
   case-insensitive lookup, ordering, immutability, and ranged string decoding.
 - `HpackSnapshotTest` covers deterministic binary round trips, dynamic context

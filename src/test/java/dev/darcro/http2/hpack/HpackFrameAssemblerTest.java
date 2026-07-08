@@ -121,6 +121,28 @@ class HpackFrameAssemblerTest {
     }
 
     @Test
+    void recoversMissingDynamicIndexesAndKeepsAssemblerUsable() throws Exception {
+        HpackFrameAssembler assembler = new HpackFrameAssembler();
+
+        DecodedHeaderBlock recovered = assembler.accept(
+                headers(1, Http2Flags.END_HEADERS, "be82")).orElseThrow();
+
+        assertTrue(recovered.recovered());
+        assertEquals(1, recovered.fields().size());
+        assertEquals("GET", recovered.method().orElseThrow());
+        assertEquals(1, recovered.recoveryEvents().size());
+        HpackRecoveryEvent event = recovered.recoveryEvents().get(0);
+        assertEquals(HpackRecoveryReason.MISSING_DYNAMIC_TABLE_INDEX, event.reason());
+        assertEquals(62, event.index());
+        assertFalse(assembler.failed());
+
+        DecodedHeaderBlock later = assembler.accept(
+                headers(3, Http2Flags.END_HEADERS, "82")).orElseThrow();
+        assertFalse(later.recovered());
+        assertEquals("GET", later.method().orElseThrow());
+    }
+
+    @Test
     void rejectsAnOversizedBlockBeforeMoreFragmentsAreRetained() {
         HpackDecoderConfig config = new HpackDecoderConfig(4096, 2, 1024);
         HpackFrameAssembler assembler = new HpackFrameAssembler(config);

@@ -197,11 +197,11 @@ public final class HpackFrameAssembler {
 
     private DecodedHeaderBlock complete() throws HpackDecodingException {
         try {
-            List<HpackHeaderField> fields = decoder.decodeFragments(fragments, encodedLength);
+            HpackDecodeResult decoded = decoder.decodeFragments(fragments, encodedLength);
             DecodedHeaderBlock result = new DecodedHeaderBlock(origin, streamId, endStream,
                     origin == HeaderBlockOrigin.PUSH_PROMISE
                             ? OptionalInt.of(promisedStreamId) : OptionalInt.empty(),
-                    fields);
+                    decoded.fields(), decoded.recoveryEvents());
             clearBlock();
             return result;
         } catch (HpackDecodingException exception) {

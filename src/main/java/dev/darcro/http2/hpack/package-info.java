@@ -7,6 +7,8 @@
  * {@link dev.darcro.http2.frame} APIs. Decoder and assembler state can be
  * captured in immutable versioned snapshots for offline continuation of the
  * same compression context. Decoded blocks provide immutable, ordered header
- * lookup with cached request and response pseudo-fields.</p>
+ * lookup with cached request and response pseudo-fields. Unavailable dynamic
+ * table references can be skipped and reported for mid-connection capture
+ * analysis.</p>
  */
 package dev.darcro.http2.hpack;
