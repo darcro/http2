@@ -157,6 +157,10 @@ Sequence recovery discards only incomplete, not-yet-decoded field-block
 fragments. Malformed HPACK blocks still raise checked exceptions because they
 can leave decoder state uncertain.
 
+If you persist assembler state between executions, use the restore overload
+that accepts `HpackFrameSequenceRecoveryPolicy.RECOVER` to keep this behavior
+after loading the snapshot.
+
 The request pseudo-fields `method()`, `scheme()`, `authority()`, and `path()`,
 and the response pseudo-field `status()`, are cached when a block is created.
 For any other name, `headerFields().first(name)`, `all(name)`, and

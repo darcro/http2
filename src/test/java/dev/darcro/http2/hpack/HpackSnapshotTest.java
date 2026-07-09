@@ -144,16 +144,26 @@ class HpackSnapshotTest {
         assertTrue(assembler.accept(new ContinuationFrame(1, Http2Flags.END_HEADERS,
                 1, ByteSequence.wrap(hex("82")))).isEmpty());
         assertTrue(assembler.recoveredSequenceErrors());
+        HpackFrameAssemblerSnapshot snapshot = HpackFrameAssemblerSnapshot.fromByteArray(
+                assembler.snapshot().toByteArray());
 
-        HpackFrameAssembler restored = HpackFrameAssembler.restore(
-                HpackFrameAssemblerSnapshot.fromByteArray(
-                        assembler.snapshot().toByteArray()),
+        HpackFrameAssembler legacyRestored = HpackFrameAssembler.restore(snapshot,
                 HpackDecoderConfig.defaults());
+        HpackFrameAssembler recoverRestored = HpackFrameAssembler.restore(snapshot,
+                HpackDecoderConfig.defaults(), HpackFrameSequenceRecoveryPolicy.RECOVER);
 
-        assertFalse(restored.failed());
+        assertFalse(legacyRestored.failed());
         assertEquals(HpackFrameSequenceRecoveryPolicy.FAIL_FAST,
-                restored.sequenceRecoveryPolicy());
-        assertFalse(restored.recoveredSequenceErrors());
+                legacyRestored.sequenceRecoveryPolicy());
+        assertFalse(legacyRestored.recoveredSequenceErrors());
+
+        assertFalse(recoverRestored.failed());
+        assertEquals(HpackFrameSequenceRecoveryPolicy.RECOVER,
+                recoverRestored.sequenceRecoveryPolicy());
+        assertFalse(recoverRestored.recoveredSequenceErrors());
+        assertTrue(recoverRestored.accept(new ContinuationFrame(1,
+                Http2Flags.END_HEADERS, 1, ByteSequence.wrap(hex("82")))).isEmpty());
+        assertTrue(recoverRestored.recoveredSequenceErrors());
     }
 
     @Test

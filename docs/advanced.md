@@ -215,9 +215,15 @@ HpackFrameAssembler restored =
 
 Incomplete fragments are copied into the snapshot. Snapshot calls are valid
 only on healthy objects and between synchronous `decode` or `accept` calls.
-Assembler sequence recovery policy and sequence recovery events are not part of
-the snapshot format; restore creates a strict assembler around the restored
-decoder state.
+Assembler sequence recovery events are not part of the snapshot format. The
+two-argument restore method creates a strict assembler around the restored
+decoder state. Use the three-argument overload to resume capture analysis with
+sequence recovery enabled:
+
+```java
+HpackFrameAssembler restored = HpackFrameAssembler.restore(
+        loaded, currentConfig, HpackFrameSequenceRecoveryPolicy.RECOVER);
+```
 
 The version 1 binary format uses `H2HP` magic, an object kind, reserved bytes,
 big-endian lengths, and exact end-of-input validation. It has no checksum,

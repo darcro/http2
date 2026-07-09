@@ -137,6 +137,9 @@ Snapshot decoding must validate before constructing restorable state:
 - Inactive assemblers have no metadata or fragment bytes.
 - Active HEADERS and PUSH_PROMISE state obey stream and promised-stream rules.
 - Restore rechecks state against the caller's current resource configuration.
+- The two-argument assembler restore overload remains strict for compatibility;
+  callers that want sequence recovery after restore must use the explicit
+  policy overload.
 
 Snapshot objects own copies of dynamic entries and incomplete fragments. Keep
 their constructors non-public so callers cannot bypass validation. The format

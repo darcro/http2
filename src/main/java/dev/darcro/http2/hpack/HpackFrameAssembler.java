@@ -70,8 +70,21 @@ public final class HpackFrameAssembler {
     public static HpackFrameAssembler restore(HpackFrameAssemblerSnapshot snapshot,
                                               HpackDecoderConfig config)
             throws HpackSnapshotException {
+        return restore(snapshot, config, HpackFrameSequenceRecoveryPolicy.FAIL_FAST);
+    }
+
+    /**
+     * Restores an assembler and its decoder under caller-supplied limits and
+     * sequence recovery policy.
+     */
+    public static HpackFrameAssembler restore(HpackFrameAssemblerSnapshot snapshot,
+                                              HpackDecoderConfig config,
+                                              HpackFrameSequenceRecoveryPolicy
+                                                      sequenceRecoveryPolicy)
+            throws HpackSnapshotException {
         Objects.requireNonNull(snapshot, "snapshot");
         Objects.requireNonNull(config, "config");
+        Objects.requireNonNull(sequenceRecoveryPolicy, "sequenceRecoveryPolicy");
         HpackDecoder decoder = HpackDecoder.restore(snapshot.decoderSnapshot(), config);
         if (snapshot.incompleteBlock().length() > config.maxEncodedHeaderBlockSize()) {
             throw new HpackSnapshotException(HpackSnapshotErrorReason.CONFIGURATION_LIMIT,
@@ -79,7 +92,7 @@ public final class HpackFrameAssembler {
         }
 
         HpackFrameAssembler assembler = new HpackFrameAssembler(decoder,
-                HpackFrameSequenceRecoveryPolicy.FAIL_FAST);
+                sequenceRecoveryPolicy);
         if (snapshot.active()) {
             HeaderBlockOrigin restoredOrigin = snapshot.origin().orElse(null);
             if (restoredOrigin == null) {
