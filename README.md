@@ -8,7 +8,8 @@ snapshot and restore support. Decoded blocks provide cached pseudo-fields and
 case-insensitive lookup for arbitrary header names. HPACK decoding is
 capture-analysis friendly by default: unavailable dynamic-table references are
 skipped and reported so processing can continue when a capture starts
-mid-connection.
+mid-connection. Parser and HPACK resource defaults are also sized for captures
+that missed the peer's SETTINGS frames.
 
 The single JAR exposes frame APIs under `dev.darcro.http2.frame` and HPACK APIs
 under `dev.darcro.http2.hpack`.

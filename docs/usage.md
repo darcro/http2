@@ -37,7 +37,9 @@ The library requires Java 17 and has no runtime dependencies.
 ## Parse one frame
 
 `Http2FrameParser` accepts exactly one complete frame: the 9-byte HTTP/2 frame
-header followed by the number of payload bytes declared in that header.
+header followed by the number of payload bytes declared in that header. The
+default parser accepts payloads up to HTTP/2's protocol maximum so captures can
+start after `SETTINGS_MAX_FRAME_SIZE` was negotiated.
 
 ```java
 import dev.darcro.http2.frame.DataFrame;
@@ -149,7 +151,9 @@ When captured traffic starts in the middle of an existing HTTP/2 connection,
 the local HPACK dynamic table can be missing entries referenced by later
 frames. By default the decoder skips only those unavailable dynamic-table
 references, reports them through `recoveryEvents()`, and keeps processing later
-fields and frames. Other malformed HPACK data still raises a checked exception.
+fields and frames. Default HPACK resource limits are also capture-oriented, so
+missed SETTINGS values are less likely to stop analysis. Other malformed HPACK
+data still raises a checked exception.
 
 Both parsing and HPACK APIs use checked exceptions because their inputs are
 untrusted wire data. See the [advanced guide](advanced.md) for configuration,

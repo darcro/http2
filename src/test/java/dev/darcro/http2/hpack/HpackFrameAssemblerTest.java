@@ -162,7 +162,7 @@ class HpackFrameAssemblerTest {
         assertEquals(HpackDecoderConfig.defaults(), new HpackFrameAssembler().config());
         assertEquals(config, assembler.config());
         assertEquals(0, assembler.dynamicTableSize());
-        assertEquals(4_096, assembler.maxDynamicTableSize());
+        assertEquals(8_192, assembler.maxDynamicTableSize());
         assertThrows(IllegalArgumentException.class,
                 () -> assembler.updateMaxDynamicTableSize(8_193));
 

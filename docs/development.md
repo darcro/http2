@@ -58,7 +58,9 @@ implicitly decode HPACK or modify a connection-scoped compression table.
 
 - A parse call consumes exactly the supplied array or array range.
 - The declared 24-bit payload length must equal the available payload bytes.
-- The configured maximum is checked before payload interpretation.
+- The configured maximum is checked before payload interpretation. The default
+  maximum is the protocol ceiling for capture analysis; strict endpoint tests
+  must pass the initial limit explicitly.
 - Payloads use `ByteSequence` views; parsing should not copy application data,
   debug data, opaque PING data, or header fragments.
 - The reserved stream-ID bit and unused flags are ignored on receipt while raw
@@ -86,6 +88,9 @@ When adding an RFC-defined frame type:
 - Inserting an oversized entry clears the table without adding it.
 - Table-size updates are accepted only at the beginning of a block, at most
   twice, and may not exceed the applied protocol maximum.
+- Default HPACK configuration is capture-oriented and permits larger resource
+  ceilings when SETTINGS frames were missed. Use `strictDefaults()` when a test
+  or integration requires endpoint-style initial limits.
 - A pending SETTINGS reduction requires the next block to begin with an update
   at or below the smallest pending value.
 - Header order and duplicates are preserved.

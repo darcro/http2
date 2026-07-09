@@ -1,26 +1,30 @@
 # Advanced Configuration Guide
 
 This guide describes parser limits, HPACK resource controls, connection state,
-and failure handling. The defaults are suitable for small applications, but a
-complete HTTP/2 endpoint must integrate negotiated settings deliberately.
+and failure handling. The defaults favor offline capture analysis where the
+start of the HTTP/2 connection and its SETTINGS exchange may be missing. A
+complete HTTP/2 endpoint should use explicit strict limits and integrate
+negotiated settings deliberately.
 
 Frame types are in `dev.darcro.http2.frame`; HPACK types are in
 `dev.darcro.http2.hpack`. Both packages are delivered by the same artifact.
 
 ## Frame parser configuration
 
-The default parser accepts payloads up to 16,384 bytes, the initial HTTP/2
-maximum:
+The default parser accepts payloads up to 16,777,215 bytes, the maximum payload
+length encodable by HTTP/2. This avoids rejecting captured frames only because
+the earlier `SETTINGS_MAX_FRAME_SIZE` exchange was missed:
 
 ```java
 Http2FrameParser parser = new Http2FrameParser();
 ```
 
-After the peer has negotiated a larger `SETTINGS_MAX_FRAME_SIZE`, create a
-parser with that value:
+For endpoint-style strictness before a larger setting has been negotiated, pass
+the initial HTTP/2 limit explicitly:
 
 ```java
-Http2FrameParser parser = new Http2FrameParser(1_048_576);
+Http2FrameParser parser = new Http2FrameParser(
+        Http2FrameParser.INITIAL_MAX_FRAME_SIZE);
 ```
 
 The configured value must be between 16,384 and 16,777,215. The parser remains
@@ -53,13 +57,13 @@ values. Invalid method arguments instead use standard Java exceptions such as
 
 ## HPACK resource limits
 
-Default HPACK limits are intentionally bounded:
+Default HPACK limits are intentionally bounded but capture-oriented:
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
-| `maxDynamicTableCapacity` | 4,096 | Hard upper bound accepted by `updateMaxDynamicTableSize` |
-| `maxEncodedHeaderBlockSize` | 65,536 | Maximum compressed bytes in one complete field block |
-| `maxDecodedHeaderListSize` | 65,536 | Maximum decoded list size, including 32 bytes overhead per field |
+| `maxDynamicTableCapacity` | 16,777,215 | Hard upper bound accepted by table-size updates and `updateMaxDynamicTableSize` |
+| `maxEncodedHeaderBlockSize` | 16,777,215 | Maximum compressed bytes in one complete field block |
+| `maxDecodedHeaderListSize` | 16,777,215 | Maximum decoded list size, including 32 bytes overhead per field |
 | `dynamicTableRecoveryPolicy` | `SKIP_MISSING` | Handling for dynamic-table indexes missing from the local capture context |
 
 Override them when creating an assembler or a lower-level decoder:
@@ -82,16 +86,13 @@ for each field, using decoded rather than Huffman-encoded lengths.
 `HpackDecoderConfig.DEFAULT_CONFIG` is the shared immutable default instance;
 `HpackDecoderConfig.defaults()` returns that same instance.
 
-The default recovery policy is `SKIP_MISSING`, which is intended for captured
-traffic analysis where decoding may begin after an HTTP/2 connection is already
-in progress. Use `FAIL_ON_MISSING` for strict endpoint-style behavior:
+The default limits and recovery policy are intended for captured traffic
+analysis where decoding may begin after an HTTP/2 connection is already in
+progress and the SETTINGS frames may be absent. Use `strictDefaults()` for
+endpoint-style behavior close to the original bounded defaults:
 
 ```java
-HpackDecoderConfig strictConfig = new HpackDecoderConfig(
-        4_096,
-        65_536,
-        65_536,
-        HpackDynamicTableRecoveryPolicy.FAIL_ON_MISSING);
+HpackDecoderConfig strictConfig = HpackDecoderConfig.strictDefaults();
 ```
 
 Increasing limits increases the memory and CPU available to untrusted peers.
@@ -100,10 +101,12 @@ values.
 
 ## Dynamic table and SETTINGS
 
-An assembler's owned decoder starts with an empty dynamic table and an allowed
-size of 4,096 bytes. Use one assembler for each inbound compression context. A
-tool observing both connection directions therefore needs independent
-assemblers for requests and responses.
+An assembler's owned decoder starts with an empty dynamic table and an active
+table limit of 4,096 bytes, but the default configuration allows later
+table-size updates up to 16,777,215 bytes when the SETTINGS exchange was
+missed. Use one assembler for each inbound compression context. A tool
+observing both connection directions therefore needs independent assemblers for
+requests and responses.
 
 When a locally advertised `SETTINGS_HEADER_TABLE_SIZE` change has taken effect
 according to the HTTP/2 SETTINGS acknowledgment rules, update the assembler:
@@ -115,14 +118,15 @@ assembler.updateMaxDynamicTableSize(appliedHeaderTableSize);
 Lower-level users decoding complete HPACK blocks call the method with the same
 name on their `HpackDecoder`.
 
-The value cannot exceed `config.maxDynamicTableCapacity()`. After a reduction,
-the next encoded block must begin with a conforming HPACK table-size update.
-The decoder tracks the smallest pending reduction when settings change more
-than once between field blocks.
+The value cannot exceed `config.maxDynamicTableCapacity()`. After an explicit
+reduction, the next encoded block must begin with a conforming HPACK table-size
+update. The decoder tracks the smallest pending reduction when settings change
+more than once between field blocks.
 
 `dynamicTableSize()` reports the bytes currently occupied by entries.
-`maxDynamicTableSize()` reports the latest protocol maximum supplied through
-`updateMaxDynamicTableSize`; it is not the current number of occupied bytes.
+`maxDynamicTableSize()` reports the current allowed protocol maximum. With the
+capture-oriented defaults this initially equals the configured capacity, not
+the active 4,096-byte dynamic table limit.
 
 Neither API accepts `SettingsFrame` directly. Connection code remains
 responsible for endpoint direction, acknowledgment timing, and choosing which
@@ -256,6 +260,12 @@ after those failures. Discard the connection and decoder; subsequent decode
 calls return `DECODER_FAILED`. Configure
 `HpackDynamicTableRecoveryPolicy.FAIL_ON_MISSING` when missing dynamic indexes
 should also follow this strict failure path.
+
+The parser and HPACK decoder cannot reconstruct missed SETTINGS values. The
+default response is therefore permissive but still bounded: accept protocol-size
+frames and larger HPACK blocks/table updates, report recoverable missing
+dynamic indexes, and reserve exceptions for malformed data or explicit caller
+limits.
 
 `HpackFrameSequenceException` reports invalid CONTINUATION sequencing and its
 stream ID. A sequence error poisons the assembler because it represents a

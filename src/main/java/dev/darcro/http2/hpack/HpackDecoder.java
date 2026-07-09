@@ -26,6 +26,7 @@ public final class HpackDecoder {
 
     public HpackDecoder(HpackDecoderConfig config) {
         this.config = Objects.requireNonNull(config, "config");
+        maximumTableSize = config.maxDynamicTableCapacity();
     }
 
     /** Restores a healthy decoder under caller-supplied local resource limits. */

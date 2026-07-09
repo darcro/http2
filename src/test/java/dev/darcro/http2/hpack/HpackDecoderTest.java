@@ -174,6 +174,29 @@ class HpackDecoderTest {
     }
 
     @Test
+    void defaultDecoderAcceptsLargerTableUpdatesWhenSettingsWereMissed()
+            throws Exception {
+        HpackDecoder decoder = new HpackDecoder();
+
+        assertTrue(decoder.decode(hex("3fe21f")).isEmpty());
+
+        assertEquals(HpackDecoderConfig.DEFAULT_DYNAMIC_TABLE_CAPACITY,
+                decoder.maxDynamicTableSize());
+        assertFalse(decoder.failed());
+    }
+
+    @Test
+    void strictDecoderRejectsLargerTableUpdatesWhenSettingsWereNotApplied() {
+        HpackDecoder decoder = new HpackDecoder(HpackDecoderConfig.strictDefaults());
+
+        HpackDecodingException error = assertThrows(HpackDecodingException.class,
+                () -> decoder.decode(hex("3fe21f")));
+
+        assertEquals(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE, error.reason());
+        assertTrue(decoder.failed());
+    }
+
+    @Test
     void rejectsMalformedInputAndPoisonsDecoder() {
         HpackDecoder decoder = new HpackDecoder();
         HpackDecodingException invalidIndex = assertThrows(HpackDecodingException.class,
@@ -276,13 +299,24 @@ class HpackDecoderTest {
 
         assertError(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE, "8220");
         assertError(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE, "202020");
-        assertError(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE, "3fe21f");
+        HpackDecoder strict = new HpackDecoder(HpackDecoderConfig.strictDefaults());
+        assertEquals(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE,
+                assertThrows(HpackDecodingException.class,
+                        () -> strict.decode(hex("3fe21f"))).reason());
     }
 
     @Test
     void validatesConfigurationAndRanges() {
         assertSame(HpackDecoderConfig.DEFAULT_CONFIG, HpackDecoderConfig.defaults());
         assertSame(HpackDecoderConfig.DEFAULT_CONFIG, new HpackDecoder().config());
+        assertSame(HpackDecoderConfig.STRICT_CONFIG,
+                HpackDecoderConfig.strictDefaults());
+        assertEquals(0x00ff_ffff,
+                HpackDecoderConfig.defaults().maxDynamicTableCapacity());
+        assertEquals(65_536,
+                HpackDecoderConfig.strictDefaults().maxEncodedHeaderBlockSize());
+        assertEquals(HpackDynamicTableRecoveryPolicy.FAIL_ON_MISSING,
+                HpackDecoderConfig.strictDefaults().dynamicTableRecoveryPolicy());
         assertEquals(HpackDynamicTableRecoveryPolicy.SKIP_MISSING,
                 new HpackDecoderConfig(4096, 10, 10).dynamicTableRecoveryPolicy());
         assertThrows(IllegalArgumentException.class,
@@ -294,7 +328,8 @@ class HpackDecoderTest {
         assertThrows(IndexOutOfBoundsException.class,
                 () -> new HpackDecoder().decode(new byte[2], 1, 2));
         assertThrows(IllegalArgumentException.class,
-                () -> new HpackDecoder().updateMaxDynamicTableSize(4097));
+                () -> new HpackDecoder(HpackDecoderConfig.strictDefaults())
+                        .updateMaxDynamicTableSize(4097));
     }
 
     private static void assertError(HpackErrorReason reason, String hex) {

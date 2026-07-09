@@ -71,7 +71,7 @@ class HpackSnapshotTest {
 
         HpackSnapshotException error = assertThrows(HpackSnapshotException.class,
                 () -> HpackDecoder.restore(decoder.snapshot(),
-                        HpackDecoderConfig.defaults()));
+                        HpackDecoderConfig.strictDefaults()));
         assertEquals(HpackSnapshotErrorReason.CONFIGURATION_LIMIT, error.reason());
         assertEquals(-1, error.offset());
     }

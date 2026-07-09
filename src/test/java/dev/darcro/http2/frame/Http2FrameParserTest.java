@@ -37,7 +37,7 @@ class Http2FrameParserTest {
 
         ParseErrorException error = assertThrows(ParseErrorException.class,
                 () -> parser.parse(ethernetPacket));
-        assertEquals(ParseErrorReason.FRAME_SIZE_ERROR, error.reason());
+        assertEquals(ParseErrorReason.LENGTH_MISMATCH, error.reason());
         assertTrue(Http2ConnectionPreface.isValid(ethernetPacket, 66, 24));
         assertEquals("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
                 new String(ethernetPacket, 66, 24, StandardCharsets.US_ASCII));
@@ -94,6 +94,23 @@ class Http2FrameParserTest {
         assertTrue(frame.endStream());
         assertFalse(frame.padded());
         assertArrayEquals(new byte[]{1, 2, 3}, frame.data().toByteArray());
+    }
+
+    @Test
+    void defaultParserAcceptsFramesLargerThanTheInitialEndpointLimit()
+            throws Exception {
+        int payloadLength = Http2FrameParser.INITIAL_MAX_FRAME_SIZE + 1;
+        byte[] encoded = new byte[9 + payloadLength];
+        encoded[0] = (byte) (payloadLength >>> 16);
+        encoded[1] = (byte) (payloadLength >>> 8);
+        encoded[2] = (byte) payloadLength;
+        encoded[3] = Http2FrameTypes.DATA;
+        encoded[8] = 1;
+
+        DataFrame frame = assertInstanceOf(DataFrame.class, parser.parse(encoded));
+
+        assertEquals(payloadLength, frame.length());
+        assertEquals(payloadLength, frame.data().length());
     }
 
     @Test
@@ -240,12 +257,14 @@ class Http2FrameParserTest {
                 () -> parser.parse(frame(1, Http2FrameTypes.DATA, 0, 1, 1, 2)));
         assertEquals(ParseErrorReason.LENGTH_MISMATCH, trailing.reason());
 
+        Http2FrameParser strictParser = new Http2FrameParser(
+                Http2FrameParser.INITIAL_MAX_FRAME_SIZE);
         byte[] oversizedHeader = new byte[9];
         oversizedHeader[0] = 0;
         oversizedHeader[1] = 0x40;
         oversizedHeader[2] = 1;
         ParseErrorException oversized = assertThrows(ParseErrorException.class,
-                () -> parser.parse(oversizedHeader));
+                () -> strictParser.parse(oversizedHeader));
         assertEquals(ParseErrorReason.FRAME_SIZE_ERROR, oversized.reason());
     }
 
@@ -332,6 +351,7 @@ class Http2FrameParserTest {
         assertThrows(NullPointerException.class, () -> parser.parse(null));
         assertThrows(IndexOutOfBoundsException.class,
                 () -> parser.parse(new byte[9], 5, 9));
+        assertEquals(Http2FrameParser.MAX_FRAME_SIZE_LIMIT, parser.maxFrameSize());
         assertThrows(IllegalArgumentException.class, () -> new Http2FrameParser(16_383));
         assertThrows(IllegalArgumentException.class,
                 () -> new Http2FrameParser(Http2FrameParser.MAX_FRAME_SIZE_LIMIT + 1));

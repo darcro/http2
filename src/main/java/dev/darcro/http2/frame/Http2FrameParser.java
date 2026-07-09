@@ -11,8 +11,10 @@ import java.util.Objects;
  * which must not be modified while the frame is in use.</p>
  */
 public final class Http2FrameParser {
-    public static final int DEFAULT_MAX_FRAME_SIZE = 16_384;
+    public static final int INITIAL_MAX_FRAME_SIZE = 16_384;
+    public static final int MIN_MAX_FRAME_SIZE = INITIAL_MAX_FRAME_SIZE;
     public static final int MAX_FRAME_SIZE_LIMIT = 0x00ff_ffff;
+    public static final int DEFAULT_MAX_FRAME_SIZE = MAX_FRAME_SIZE_LIMIT;
     private static final int HEADER_LENGTH = 9;
 
     private final int maxFrameSize;
@@ -22,9 +24,9 @@ public final class Http2FrameParser {
     }
 
     public Http2FrameParser(int maxFrameSize) {
-        if (maxFrameSize < DEFAULT_MAX_FRAME_SIZE || maxFrameSize > MAX_FRAME_SIZE_LIMIT) {
+        if (maxFrameSize < MIN_MAX_FRAME_SIZE || maxFrameSize > MAX_FRAME_SIZE_LIMIT) {
             throw new IllegalArgumentException("maxFrameSize must be between "
-                    + DEFAULT_MAX_FRAME_SIZE + " and " + MAX_FRAME_SIZE_LIMIT);
+                    + MIN_MAX_FRAME_SIZE + " and " + MAX_FRAME_SIZE_LIMIT);
         }
         this.maxFrameSize = maxFrameSize;
     }
@@ -268,7 +270,7 @@ public final class Http2FrameParser {
         boolean invalid = switch (identifier) {
             case 0x02 -> value > 1; // SETTINGS_ENABLE_PUSH
             case 0x04 -> value > 0x7fff_ffffL; // SETTINGS_INITIAL_WINDOW_SIZE
-            case 0x05 -> value < DEFAULT_MAX_FRAME_SIZE || value > MAX_FRAME_SIZE_LIMIT;
+            case 0x05 -> value < MIN_MAX_FRAME_SIZE || value > MAX_FRAME_SIZE_LIMIT;
             default -> false;
         };
         if (invalid) {
