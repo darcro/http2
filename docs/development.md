@@ -169,6 +169,11 @@ safely. Currently that means unavailable dynamic-table indexes. Do not use
 recovery events for truncation, Huffman failures, integer overflow, illegal
 table-size updates, or other cases where block alignment is not reliable.
 
+`HpackFrameSequenceRecoveryEvent` is a separate assembler diagnostic for frame
+sequence errors that happen before HPACK decoding. It must not be emitted for
+malformed HPACK bytes. Recovering a sequence error may discard incomplete
+fragments, but it must not call into the decoder for those abandoned fragments.
+
 ## Performance and ownership
 
 The frame parser is zero-copy. The HPACK assembler also retains fragment views
@@ -180,6 +185,11 @@ limit updates, but must not expose the live decoder or accept one supplied by a
 caller. This prevents direct decode calls from mutating the compression context
 outside frame order. Keep direct `HpackDecoder` use available for integrations
 that already reassemble complete field blocks.
+
+Sequence recovery must preserve that ownership boundary. Ignored orphan
+CONTINUATION frames, wrong-stream CONTINUATION frames, and abandoned
+interleaved partial blocks are parser/assembler recovery decisions only; they
+must not mutate the decoder dynamic table or pending table-size update state.
 
 `HpackHeaderFields` wraps decoded output in an immutable ordered list. It scans
 once to cache only the five request/response pseudo-field values defined by RFC
@@ -210,13 +220,14 @@ The current suite contains six groups:
   nghttpx response supplied for this project.
 - `HpackFrameAssemblerTest` covers parser integration, HEADERS and PUSH_PROMISE
   metadata, CONTINUATION sequencing, interleaving, resource errors, and failed
-  states, including exclusive decoder ownership, missing-index recovery, and
-  its safe facade.
+  states, including exclusive decoder ownership, missing-index recovery,
+  opt-in sequence recovery, and its safe facade.
 - `HpackHeaderFieldsTest` covers pseudo-field caching, duplicate detection,
   case-insensitive lookup, ordering, immutability, and ranged string decoding.
 - `HpackSnapshotTest` covers deterministic binary round trips, dynamic context
   continuation, pending SETTINGS changes, mid-block HEADERS/PUSH_PROMISE state,
-  caller limits, immutability, corruption, and failed-state rejection.
+  caller limits, immutability, corruption, failed-state rejection, and the fact
+  that assembler sequence recovery diagnostics are not persisted.
 
 Protocol changes require both positive and negative tests. For HPACK stateful
 behavior, use multiple blocks on the same decoder so dynamic indexes and

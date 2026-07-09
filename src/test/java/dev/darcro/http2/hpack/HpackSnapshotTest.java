@@ -138,6 +138,25 @@ class HpackSnapshotTest {
     }
 
     @Test
+    void assemblerSnapshotDoesNotPersistSequenceRecoveryDiagnostics() throws Exception {
+        HpackFrameAssembler assembler = new HpackFrameAssembler(
+                HpackFrameSequenceRecoveryPolicy.RECOVER);
+        assertTrue(assembler.accept(new ContinuationFrame(1, Http2Flags.END_HEADERS,
+                1, ByteSequence.wrap(hex("82")))).isEmpty());
+        assertTrue(assembler.recoveredSequenceErrors());
+
+        HpackFrameAssembler restored = HpackFrameAssembler.restore(
+                HpackFrameAssemblerSnapshot.fromByteArray(
+                        assembler.snapshot().toByteArray()),
+                HpackDecoderConfig.defaults());
+
+        assertFalse(restored.failed());
+        assertEquals(HpackFrameSequenceRecoveryPolicy.FAIL_FAST,
+                restored.sequenceRecoveryPolicy());
+        assertFalse(restored.recoveredSequenceErrors());
+    }
+
+    @Test
     void assemblerRoundTripPreservesPushPromiseMetadata() throws Exception {
         byte[] initial = hex("8286");
         HpackFrameAssembler assembler = new HpackFrameAssembler();

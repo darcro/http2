@@ -18,7 +18,10 @@ import java.util.OptionalInt;
  */
 public final class HpackFrameAssembler {
     private final HpackDecoder decoder;
+    private final HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy;
     private final List<ByteSequence> fragments = new ArrayList<>();
+    private final List<HpackFrameSequenceRecoveryEvent> sequenceRecoveryEvents =
+            new ArrayList<>();
     private HeaderBlockOrigin origin;
     private int streamId;
     private boolean endStream;
@@ -29,16 +32,38 @@ public final class HpackFrameAssembler {
 
     /** Creates an assembler with the default HPACK resource limits. */
     public HpackFrameAssembler() {
-        this(new HpackDecoder());
+        this(new HpackDecoder(), HpackFrameSequenceRecoveryPolicy.FAIL_FAST);
     }
 
     /** Creates an assembler with the supplied HPACK resource limits. */
     public HpackFrameAssembler(HpackDecoderConfig config) {
-        this(new HpackDecoder(Objects.requireNonNull(config, "config")));
+        this(new HpackDecoder(Objects.requireNonNull(config, "config")),
+                HpackFrameSequenceRecoveryPolicy.FAIL_FAST);
     }
 
-    private HpackFrameAssembler(HpackDecoder decoder) {
-        this.decoder = decoder;
+    /**
+     * Creates an assembler with the default HPACK resource limits and supplied
+     * sequence recovery policy.
+     */
+    public HpackFrameAssembler(HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy) {
+        this(new HpackDecoder(), sequenceRecoveryPolicy);
+    }
+
+    /**
+     * Creates an assembler with the supplied HPACK resource limits and sequence
+     * recovery policy.
+     */
+    public HpackFrameAssembler(HpackDecoderConfig config,
+                               HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy) {
+        this(new HpackDecoder(Objects.requireNonNull(config, "config")),
+                sequenceRecoveryPolicy);
+    }
+
+    private HpackFrameAssembler(HpackDecoder decoder,
+                                HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy) {
+        this.decoder = Objects.requireNonNull(decoder, "decoder");
+        this.sequenceRecoveryPolicy = Objects.requireNonNull(sequenceRecoveryPolicy,
+                "sequenceRecoveryPolicy");
     }
 
     /** Restores an assembler and its decoder under caller-supplied limits. */
@@ -53,7 +78,8 @@ public final class HpackFrameAssembler {
                     -1, "Incomplete field block exceeds local configuration");
         }
 
-        HpackFrameAssembler assembler = new HpackFrameAssembler(decoder);
+        HpackFrameAssembler assembler = new HpackFrameAssembler(decoder,
+                HpackFrameSequenceRecoveryPolicy.FAIL_FAST);
         if (snapshot.active()) {
             HeaderBlockOrigin restoredOrigin = snapshot.origin().orElse(null);
             if (restoredOrigin == null) {
@@ -106,6 +132,26 @@ public final class HpackFrameAssembler {
         return failed;
     }
 
+    /** Returns the policy used for invalid field-block frame sequencing. */
+    public HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy() {
+        return sequenceRecoveryPolicy;
+    }
+
+    /** Returns immutable diagnostics for recovered frame sequence errors. */
+    public List<HpackFrameSequenceRecoveryEvent> recoveryEvents() {
+        return List.copyOf(sequenceRecoveryEvents);
+    }
+
+    /** Returns true when any frame sequence errors have been recovered. */
+    public boolean recoveredSequenceErrors() {
+        return !sequenceRecoveryEvents.isEmpty();
+    }
+
+    /** Clears recovered frame sequence diagnostics without changing decoder state. */
+    public void clearRecoveryEvents() {
+        sequenceRecoveryEvents.clear();
+    }
+
     /** Captures the decoder and any field block held between frame inputs. */
     public HpackFrameAssemblerSnapshot snapshot() {
         if (failed || decoder.failed()) {
@@ -133,26 +179,54 @@ public final class HpackFrameAssembler {
         }
 
         if (active) {
-            if (!(frame instanceof ContinuationFrame continuation)) {
-                fail();
-                throw sequenceError(HpackFrameSequenceReason.INTERLEAVED_FRAME,
+            return acceptActive(frame);
+        }
+        return acceptIdle(frame);
+    }
+
+    private Optional<DecodedHeaderBlock> acceptActive(Http2Frame frame)
+            throws HpackDecodingException, HpackFrameSequenceException {
+        if (!(frame instanceof ContinuationFrame continuation)) {
+            if (recoveringSequenceErrors()) {
+                recoverSequenceError(HpackFrameSequenceReason.INTERLEAVED_FRAME,
                         frame.streamId(),
                         "A field block cannot be interleaved with another frame");
+                clearBlock();
+                return acceptIdle(frame);
             }
-            if (continuation.streamId() != streamId) {
-                fail();
-                throw sequenceError(HpackFrameSequenceReason.WRONG_STREAM,
+            fail();
+            throw sequenceError(HpackFrameSequenceReason.INTERLEAVED_FRAME,
+                    frame.streamId(),
+                    "A field block cannot be interleaved with another frame");
+        }
+        if (continuation.streamId() != streamId) {
+            if (recoveringSequenceErrors()) {
+                recoverSequenceError(HpackFrameSequenceReason.WRONG_STREAM,
                         continuation.streamId(),
                         "CONTINUATION frame belongs to a different stream");
+                clearBlock();
+                return Optional.empty();
             }
-            append(continuation.headerBlockFragment());
-            if (continuation.endHeaders()) {
-                return Optional.of(complete());
-            }
-            return Optional.empty();
+            fail();
+            throw sequenceError(HpackFrameSequenceReason.WRONG_STREAM,
+                    continuation.streamId(),
+                    "CONTINUATION frame belongs to a different stream");
         }
+        append(continuation.headerBlockFragment());
+        if (continuation.endHeaders()) {
+            return Optional.of(complete());
+        }
+        return Optional.empty();
+    }
 
+    private Optional<DecodedHeaderBlock> acceptIdle(Http2Frame frame)
+            throws HpackDecodingException, HpackFrameSequenceException {
         if (frame instanceof ContinuationFrame) {
+            if (recoveringSequenceErrors()) {
+                recoverSequenceError(HpackFrameSequenceReason.UNEXPECTED_CONTINUATION,
+                        frame.streamId(), "CONTINUATION has no preceding field block");
+                return Optional.empty();
+            }
             fail();
             throw sequenceError(HpackFrameSequenceReason.UNEXPECTED_CONTINUATION,
                     frame.streamId(), "CONTINUATION has no preceding field block");
@@ -168,6 +242,16 @@ public final class HpackFrameAssembler {
             return pushPromise.endHeaders() ? Optional.of(complete()) : Optional.empty();
         }
         return Optional.empty();
+    }
+
+    private boolean recoveringSequenceErrors() {
+        return sequenceRecoveryPolicy == HpackFrameSequenceRecoveryPolicy.RECOVER;
+    }
+
+    private void recoverSequenceError(HpackFrameSequenceReason reason, int streamId,
+                                      String message) {
+        sequenceRecoveryEvents.add(new HpackFrameSequenceRecoveryEvent(reason, streamId,
+                message));
     }
 
     private void begin(HeaderBlockOrigin origin, int streamId, boolean endStream,

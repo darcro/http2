@@ -115,6 +115,7 @@ HEADERS or PUSH_PROMISE and its CONTINUATION frames.
 ```java
 import dev.darcro.http2.hpack.DecodedHeaderBlock;
 import dev.darcro.http2.hpack.HpackFrameAssembler;
+import dev.darcro.http2.hpack.HpackFrameSequenceRecoveryPolicy;
 import java.util.Optional;
 
 HpackFrameAssembler assembler = new HpackFrameAssembler();
@@ -135,6 +136,26 @@ if (completed.isPresent()) {
             System.out.println("content-type=" + field.valueUtf8()));
 }
 ```
+
+The default assembler is strict about HEADERS, PUSH_PROMISE, and CONTINUATION
+ordering. For offline capture analysis where the first observed frame may be
+mid-block or frames may be missing, create the assembler with sequence
+recovery:
+
+```java
+HpackFrameAssembler assembler = new HpackFrameAssembler(
+        HpackFrameSequenceRecoveryPolicy.RECOVER);
+
+assembler.accept(frame);
+if (assembler.recoveredSequenceErrors()) {
+    assembler.recoveryEvents().forEach(System.out::println);
+    assembler.clearRecoveryEvents();
+}
+```
+
+Sequence recovery discards only incomplete, not-yet-decoded field-block
+fragments. Malformed HPACK blocks still raise checked exceptions because they
+can leave decoder state uncertain.
 
 The request pseudo-fields `method()`, `scheme()`, `authority()`, and `path()`,
 and the response pseudo-field `status()`, are cached when a block is created.

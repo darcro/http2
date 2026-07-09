@@ -146,6 +146,22 @@ The assembler accepts every `Http2Frame`:
 - CONTINUATION fragments must be contiguous and use the same stream ID.
 - Completion returns `DecodedHeaderBlock` when `END_HEADERS` is observed.
 
+The default sequence policy is `FAIL_FAST`, which matches HTTP/2 connection
+semantics. Capture-analysis tools can opt into
+`HpackFrameSequenceRecoveryPolicy.RECOVER`:
+
+```java
+HpackFrameAssembler assembler = new HpackFrameAssembler(
+        config, HpackFrameSequenceRecoveryPolicy.RECOVER);
+```
+
+In recover mode, an orphan CONTINUATION is ignored, a wrong-stream CONTINUATION
+abandons the current incomplete block, and an interleaved frame abandons the
+current incomplete block before the incoming frame is processed as idle input.
+Each recovered sequence error is reported through
+`assembler.recoveryEvents()`. Call `clearRecoveryEvents()` after consuming
+diagnostics if the application reports them incrementally.
+
 `DecodedHeaderBlock` retains the originating frame kind, stream ID, END_STREAM
 state, optional promised stream ID, and ordered decoded fields. Header order and
 duplicates are preserved.
@@ -199,6 +215,9 @@ HpackFrameAssembler restored =
 
 Incomplete fragments are copied into the snapshot. Snapshot calls are valid
 only on healthy objects and between synchronous `decode` or `accept` calls.
+Assembler sequence recovery policy and sequence recovery events are not part of
+the snapshot format; restore creates a strict assembler around the restored
+decoder state.
 
 The version 1 binary format uses `H2HP` magic, an object kind, reserved bytes,
 big-endian lengths, and exact end-of-input validation. It has no checksum,
@@ -268,8 +287,15 @@ dynamic indexes, and reserve exceptions for malformed data or explicit caller
 limits.
 
 `HpackFrameSequenceException` reports invalid CONTINUATION sequencing and its
-stream ID. A sequence error poisons the assembler because it represents a
-connection protocol error, but it does not mutate the underlying decoder.
+stream ID. With the default `FAIL_FAST` sequence policy, a sequence error
+poisons the assembler because it represents a connection protocol error, but it
+does not mutate the underlying decoder.
+
+With `HpackFrameSequenceRecoveryPolicy.RECOVER`, the assembler records
+`HpackFrameSequenceRecoveryEvent` diagnostics and continues after sequence
+errors that occur before HPACK decoding. Recovery never decodes abandoned
+incomplete fragments, so the decoder dynamic table is not advanced by skipped
+wire data. HPACK decoding failures remain fatal even in recover mode.
 
 Do not attempt to recover poisoned objects with reflection or retained internal
 state. Create new instances for a new connection or restore from a known-good
