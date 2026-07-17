@@ -363,6 +363,54 @@ class Http2FrameParserTest {
     }
 
     @Test
+    void observesValidFramesWithoutCopying() {
+        byte[] encoded = frame(0, Http2FrameTypes.DATA, 0, 1, 1, 2);
+
+        Http2FrameObservation observation = parser.observe(encoded);
+        DataFrame data = assertInstanceOf(DataFrame.class,
+                observation.frame().orElseThrow());
+
+        assertTrue(observation.valid());
+        assertTrue(observation.diagnostics().isEmpty());
+        assertEquals(2, observation.header().orElseThrow().payloadLength());
+        encoded[9] = 9;
+        assertEquals(9, data.data().unsignedByteAt(0));
+        assertEquals(9, observation.rawBytes().unsignedByteAt(9));
+    }
+
+    @Test
+    void observesMalformedFramesWithRawHeaderAndDiagnostic() {
+        byte[] encoded = frame(0, Http2FrameTypes.SETTINGS, 0, 0,
+                0, 2, 0, 0, 0, 2);
+
+        Http2FrameObservation observation = parser.observe(encoded);
+
+        assertFalse(observation.valid());
+        assertTrue(observation.frame().isEmpty());
+        assertEquals(Http2FrameTypes.SETTINGS,
+                observation.header().orElseThrow().type());
+        assertEquals(ParseErrorReason.INVALID_SETTING,
+                observation.diagnostics().get(0).reason());
+        assertArrayEquals(encoded, observation.rawBytes().toByteArray());
+    }
+
+    @Test
+    void ownedObservationIsIndependentAndTruncationHasNoHeader() {
+        byte[] encoded = frame(0, Http2FrameTypes.DATA, 0, 1, 1);
+        Http2FrameObservation owned = parser.observeOwned(encoded);
+        encoded[9] = 7;
+
+        DataFrame data = assertInstanceOf(DataFrame.class,
+                owned.frame().orElseThrow());
+        assertEquals(1, data.data().unsignedByteAt(0));
+
+        Http2FrameObservation truncated = parser.observe(new byte[8]);
+        assertTrue(truncated.header().isEmpty());
+        assertEquals(ParseErrorReason.TRUNCATED_HEADER,
+                truncated.diagnostics().get(0).reason());
+    }
+
+    @Test
     void wrapsCompleteAndRangedByteSequencesWithoutCopying() {
         byte[] bytes = {1, 2, 3, 4};
         ByteSequence complete = ByteSequence.wrap(bytes);

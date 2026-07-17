@@ -1,39 +1,40 @@
-# HTTP/2 Frame Parser
+# HTTP/2 Passive Analysis Library
 
-A dependency-free Java 17 library for parsing HTTP/2 frames and decoding HPACK
-header blocks. It supports every frame type defined by RFC 9113, preserves
-unknown extension frames, validates the HTTP/2 client preface, and implements
-stateful RFC 7541 HPACK decoding, frame-aware header assembly, and offline
-snapshot and restore support. Decoded blocks provide cached pseudo-fields and
-case-insensitive lookup for arbitrary header names. HPACK decoding is
-capture-analysis friendly by default: unavailable dynamic-table references are
-skipped and reported so processing can continue when a capture starts
-mid-connection. Parser and HPACK resource defaults are also sized for captures
-that missed the peer's SETTINGS frames.
+A dependency-free Java 17 library for inspecting HTTP/2 frames and HPACK
+header blocks from captured traffic. It is designed for passive analysis: the
+caller reconstructs TCP, separates connection directions, and supplies exact
+candidate frames in observation order. The library preserves raw evidence,
+reports diagnostics without becoming unusable, and records the provenance of
+decoded header names and values.
 
 The single JAR exposes frame APIs under `dev.darcro.http2.frame` and HPACK APIs
 under `dev.darcro.http2.hpack`.
 
 ```java
-import dev.darcro.http2.frame.DataFrame;
-import dev.darcro.http2.frame.Http2Frame;
-import dev.darcro.http2.frame.Http2FrameParser;
+Http2FrameParser parser = new Http2FrameParser();
+Http2FrameObservation observation = parser.observe(candidateFrameBytes);
 
-Http2Frame frame = new Http2FrameParser().parse(wireBytes);
-
-if (frame instanceof DataFrame data) {
-    byte[] content = data.data().toByteArray();
-}
+observation.frame().ifPresent(frame -> {
+    HpackFrameAnalysis result = assembler.accept(frame);
+    result.decodedBlock().ifPresent(block ->
+            block.headerFields().first("content-type").ifPresent(field ->
+                    System.out.println(field.valueUtf8())));
+});
 ```
+
+`observe` is the normal passive-analysis entry point. It returns the raw bytes,
+the frame header when available, an optional typed frame, and diagnostics.
+Strict `parse` methods remain available when rejection on malformed input is
+preferred.
 
 ## Documentation
 
-- [Simple usage guide](docs/usage.md) — installation, frame parsing, preface
-  validation, and basic HPACK decoding.
-- [Advanced configuration guide](docs/advanced.md) — limits, negotiated
-  settings, state management, zero-copy behavior, and error handling.
-- [Developer guide](docs/development.md) — architecture, protocol invariants,
-  tests, maintenance workflows, and extension points.
+- [Simple usage guide](docs/usage.md) — frame observation, HPACK assembly,
+  diagnostics, and header provenance.
+- [Advanced guide](docs/advanced.md) — limits, incomplete capture context,
+  recovery semantics, snapshots, and ownership.
+- [Developer guide](docs/development.md) — architecture, invariants, testing,
+  maintenance, and release publication.
 
 ## Requirements
 
@@ -53,16 +54,12 @@ The project has no runtime dependencies.
 Tagged releases are published to GitHub Packages by the Maven workflow. A tag
 named `v0.1.0` publishes artifact version `0.1.0`.
 
-Consumers can add the package repository and dependency:
-
 ```xml
 <repository>
     <id>github</id>
     <url>https://maven.pkg.github.com/darcro/http2</url>
 </repository>
-```
 
-```xml
 <dependency>
     <groupId>dev.darcro.http2</groupId>
     <artifactId>http2-parser</artifactId>

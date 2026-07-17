@@ -1,8 +1,10 @@
 package dev.darcro.http2.frame;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Stateless parser for exactly one HTTP/2 frame.
@@ -38,6 +40,56 @@ public final class Http2FrameParser {
     public Http2Frame parse(byte[] frameBytes) throws ParseErrorException {
         Objects.requireNonNull(frameBytes, "frameBytes");
         return parse(frameBytes, 0, frameBytes.length);
+    }
+
+    /**
+     * Observes one candidate frame without throwing for malformed wire data.
+     * The returned raw bytes and any parsed payload are zero-copy views.
+     */
+    public Http2FrameObservation observe(byte[] frameBytes) {
+        Objects.requireNonNull(frameBytes, "frameBytes");
+        return observe(frameBytes, 0, frameBytes.length);
+    }
+
+    /** Observes one candidate frame from the selected zero-copy array range. */
+    public Http2FrameObservation observe(byte[] frameBytes, int offset, int length) {
+        Objects.requireNonNull(frameBytes, "frameBytes");
+        Objects.checkFromIndexSize(offset, length, frameBytes.length);
+        return observeRange(frameBytes, offset, length);
+    }
+
+    /** Observes one candidate frame after taking independent ownership of its bytes. */
+    public Http2FrameObservation observeOwned(byte[] frameBytes) {
+        Objects.requireNonNull(frameBytes, "frameBytes");
+        return observeOwned(frameBytes, 0, frameBytes.length);
+    }
+
+    /** Observes one candidate frame after copying the selected array range once. */
+    public Http2FrameObservation observeOwned(byte[] frameBytes, int offset, int length) {
+        Objects.requireNonNull(frameBytes, "frameBytes");
+        Objects.checkFromIndexSize(offset, length, frameBytes.length);
+        byte[] owned = Arrays.copyOfRange(frameBytes, offset, offset + length);
+        return observeRange(owned, 0, owned.length);
+    }
+
+    private Http2FrameObservation observeRange(byte[] frameBytes, int offset, int length) {
+        ByteSequence raw = ByteSequence.wrap(frameBytes, offset, length);
+        Optional<Http2FrameHeader> header = length < HEADER_LENGTH
+                ? Optional.empty()
+                : Optional.of(new Http2FrameHeader(unsigned24(frameBytes, offset),
+                        unsigned8(frameBytes, offset + 3),
+                        unsigned8(frameBytes, offset + 4),
+                        signed31(frameBytes, offset + 5)));
+        try {
+            return new Http2FrameObservation(raw, header,
+                    Optional.of(parse(frameBytes, offset, length)), List.of());
+        } catch (ParseErrorException error) {
+            int type = error.frameType().orElse(-1);
+            FrameDiagnostic diagnostic = new FrameDiagnostic(error.reason(),
+                    error.offset(), type, error.getMessage());
+            return new Http2FrameObservation(raw, header, Optional.empty(),
+                    List.of(diagnostic));
+        }
     }
 
     /** Parses exactly one frame from the specified array range. */

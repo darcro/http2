@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/** Version 1 binary snapshot codec. */
+/** Versioned binary snapshot codec with backward-compatible version 1 reads. */
 final class HpackSnapshotCodec {
     private static final byte[] MAGIC = {'H', '2', 'H', 'P'};
     private static final int HEADER_SIZE = 12;
@@ -32,7 +32,7 @@ final class HpackSnapshotCodec {
         writer.writeByte(snapshot.active() ? 1 : 0);
         writer.writeByte(originCode(snapshot.origin().orElse(null)));
         writer.writeByte(snapshot.endStream() ? 1 : 0);
-        writer.writeByte(0);
+        writer.writeByte(snapshot.discarding() ? 1 : 0);
         writer.writeInt(snapshot.streamId());
         writer.writeInt(snapshot.promisedStreamId().orElse(0));
         writer.writeInt(snapshot.incompleteBlock().length());
@@ -42,40 +42,44 @@ final class HpackSnapshotCodec {
 
     static HpackDecoderSnapshot decodeDecoder(byte[] encoded)
             throws HpackSnapshotException {
-        Reader reader = open(encoded, KIND_DECODER);
-        HpackDecoderSnapshot result = readDecoderPayload(reader);
+        Opened opened = open(encoded, KIND_DECODER);
+        Reader reader = opened.reader();
+        HpackDecoderSnapshot result = readDecoderPayload(reader, opened.version());
         reader.requireEnd();
         return result;
     }
 
     static HpackFrameAssemblerSnapshot decodeAssembler(byte[] encoded)
             throws HpackSnapshotException {
-        Reader reader = open(encoded, KIND_ASSEMBLER);
-        HpackDecoderSnapshot decoder = readDecoderPayload(reader);
+        Opened opened = open(encoded, KIND_ASSEMBLER);
+        Reader reader = opened.reader();
+        HpackDecoderSnapshot decoder = readDecoderPayload(reader, opened.version());
         int activeValue = reader.readByte();
         int originCode = reader.readByte();
         int endStreamValue = reader.readByte();
-        int reserved = reader.readByte();
+        int discardValue = reader.readByte();
         int streamId = reader.readInt();
         int promisedStreamId = reader.readInt();
         int fragmentLength = reader.readLength("incomplete block");
         byte[] incomplete = reader.readBytes(fragmentLength);
         reader.requireEnd();
 
-        if (activeValue > 1 || endStreamValue > 1 || reserved != 0) {
+        if (activeValue > 1 || endStreamValue > 1 || discardValue > 1
+                || (opened.version() == 1 && discardValue != 0)) {
             throw error(HpackSnapshotErrorReason.INVALID_ASSEMBLER_STATE,
                     reader.position(), "Invalid assembler flags or reserved byte");
         }
         boolean active = activeValue == 1;
+        boolean discarding = discardValue == 1;
         boolean endStream = endStreamValue == 1;
         HeaderBlockOrigin origin = decodeOrigin(originCode, reader.position());
-        validateAssembler(active, origin, streamId, endStream, promisedStreamId,
+        validateAssembler(active, discarding, origin, streamId, endStream, promisedStreamId,
                 incomplete.length, reader.position());
-        return new HpackFrameAssemblerSnapshot(decoder, active, origin, streamId,
+        return new HpackFrameAssemblerSnapshot(decoder, active, discarding, origin, streamId,
                 endStream, promisedStreamId, incomplete);
     }
 
-    private static Reader open(byte[] encoded, int expectedKind)
+    private static Opened open(byte[] encoded, int expectedKind)
             throws HpackSnapshotException {
         Objects.requireNonNull(encoded, "encoded");
         Reader reader = new Reader(encoded);
@@ -86,7 +90,7 @@ final class HpackSnapshotCodec {
             }
         }
         int version = reader.readByte();
-        if (version != HpackDecoderSnapshot.FORMAT_VERSION) {
+        if (version != 1 && version != HpackDecoderSnapshot.FORMAT_VERSION) {
             throw error(HpackSnapshotErrorReason.UNSUPPORTED_VERSION,
                     reader.position() - 1, "Unsupported HPACK snapshot version " + version);
         }
@@ -108,7 +112,7 @@ final class HpackSnapshotCodec {
             throw error(HpackSnapshotErrorReason.TRUNCATED_INPUT, reader.position(),
                     "Snapshot payload is truncated");
         }
-        return reader;
+        return new Opened(reader, version);
     }
 
     private static void writeHeader(Writer writer, int kind, int payloadSize) {
@@ -121,7 +125,7 @@ final class HpackSnapshotCodec {
     }
 
     private static int decoderPayloadSize(HpackDecoderSnapshot snapshot) {
-        long size = 16;
+        long size = 20;
         for (HpackDynamicTableEntry entry : snapshot.dynamicTableEntries()) {
             size += 8L + entry.name().length() + entry.value().length();
         }
@@ -139,9 +143,14 @@ final class HpackSnapshotCodec {
             writer.writeBytes(entry.nameBytes());
             writer.writeBytes(entry.valueBytes());
         }
+        writer.writeByte(snapshot.contextCompleteness()
+                == HpackContextCompleteness.OBSERVED_COMPLETE ? 1 : 0);
+        writer.writeByte(snapshot.tableLimitKnown() ? 1 : 0);
+        writer.writeByte(0);
+        writer.writeByte(0);
     }
 
-    private static HpackDecoderSnapshot readDecoderPayload(Reader reader)
+    private static HpackDecoderSnapshot readDecoderPayload(Reader reader, int version)
             throws HpackSnapshotException {
         int dynamicTableLimit = reader.readInt();
         int maximumTableSize = reader.readInt();
@@ -172,10 +181,34 @@ final class HpackSnapshotCodec {
             entries.add(entry);
         }
 
+        HpackContextCompleteness contextCompleteness = HpackContextCompleteness.PARTIAL;
+        boolean tableLimitKnown = false;
+        if (version >= 2) {
+            int completenessCode = reader.readByte();
+            int knownCode = reader.readByte();
+            int reserved1 = reader.readByte();
+            int reserved2 = reader.readByte();
+            if (completenessCode > 1 || knownCode > 1 || reserved1 != 0
+                    || reserved2 != 0) {
+                throw error(HpackSnapshotErrorReason.INVALID_DECODER_STATE,
+                        reader.position() - 4, "Invalid decoder confidence state");
+            }
+            contextCompleteness = completenessCode == 1
+                    ? HpackContextCompleteness.OBSERVED_COMPLETE
+                    : HpackContextCompleteness.PARTIAL;
+            tableLimitKnown = knownCode == 1;
+            if (contextCompleteness == HpackContextCompleteness.OBSERVED_COMPLETE
+                    && !tableLimitKnown) {
+                throw error(HpackSnapshotErrorReason.INVALID_DECODER_STATE,
+                        reader.position() - 4,
+                        "Observed-complete context requires a known table limit");
+            }
+        }
+
         validateDecoder(dynamicTableLimit, maximumTableSize, pendingMinimum,
                 tableSize, reader.position());
         return new HpackDecoderSnapshot(dynamicTableLimit, maximumTableSize,
-                pendingMinimum, entries);
+                pendingMinimum, contextCompleteness, tableLimitKnown, entries);
     }
 
     private static void validateDecoder(int dynamicLimit, int maximum,
@@ -199,10 +232,19 @@ final class HpackSnapshotCodec {
         }
     }
 
-    private static void validateAssembler(boolean active, HeaderBlockOrigin origin,
+    private static void validateAssembler(boolean active, boolean discarding,
+                                          HeaderBlockOrigin origin,
                                           int streamId, boolean endStream,
                                           int promisedStreamId, int fragmentLength,
                                           int offset) throws HpackSnapshotException {
+        if (discarding) {
+            if (active || origin != null || streamId <= 0 || endStream
+                    || promisedStreamId != 0 || fragmentLength != 0) {
+                throw error(HpackSnapshotErrorReason.INVALID_ASSEMBLER_STATE, offset,
+                        "Invalid discarding assembler state");
+            }
+            return;
+        }
         if (!active) {
             if (origin != null || streamId != 0 || endStream || promisedStreamId != 0
                     || fragmentLength != 0) {
@@ -254,6 +296,9 @@ final class HpackSnapshotCodec {
     private static HpackSnapshotException error(HpackSnapshotErrorReason reason,
                                                 int offset, String message) {
         return new HpackSnapshotException(reason, offset, message);
+    }
+
+    private record Opened(Reader reader, int version) {
     }
 
     private static final class Writer {

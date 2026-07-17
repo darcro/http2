@@ -1,14 +1,10 @@
 /**
- * Stateful RFC 7541 HPACK decoding and optional HTTP/2 field-block frame
- * assembly.
+ * Best-effort HPACK analysis for one observed HTTP/2 connection direction,
+ * including frame-block assembly, field provenance, diagnostics, lookup, and
+ * persistent snapshots.
  *
- * <p>The core decoder accepts complete compressed blocks. The frame assembler
- * exclusively owns its decoder and has a one-way dependency on
- * {@link dev.darcro.http2.frame} APIs. Decoder and assembler state can be
- * captured in immutable versioned snapshots for offline continuation of the
- * same compression context. Decoded blocks provide immutable, ordered header
- * lookup with cached request and response pseudo-fields. Unavailable dynamic
- * table references can be skipped and reported for mid-connection capture
- * analysis.</p>
+ * <p>The frame assembler exclusively owns its decoder. Both components recover
+ * from incomplete passive-capture input without entering terminal error
+ * states.</p>
  */
 package dev.darcro.http2.hpack;

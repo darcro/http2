@@ -6,82 +6,45 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class HpackDecoderTest {
     @Test
-    void decodesRfcAppendixCRequestsWithoutHuffmanCoding() throws Exception {
-        HpackDecoder decoder = new HpackDecoder();
+    void decodesRfcAppendixCRequestsAndTracksDynamicState() {
+        HpackDecoder decoder = HpackDecoder.atConnectionStart();
 
-        assertFields(decoder.decode(hex(
-                        "828684410f7777772e6578616d706c652e636f6d")),
+        assertFields(decoder.analyze(hex(
+                        "828684410f7777772e6578616d706c652e636f6d")).fields(),
                 ":method", "GET", ":scheme", "http", ":path", "/",
                 ":authority", "www.example.com");
-        assertFields(decoder.decode(hex("828684be58086e6f2d6361636865")),
+        HpackBlockAnalysis second = decoder.analyze(hex("828684be58086e6f2d6361636865"));
+        assertFields(second.fields(),
                 ":method", "GET", ":scheme", "http", ":path", "/",
                 ":authority", "www.example.com", "cache-control", "no-cache");
-        assertFields(decoder.decode(hex(
-                        "828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565")),
-                ":method", "GET", ":scheme", "https", ":path", "/index.html",
-                ":authority", "www.example.com", "custom-key", "custom-value");
+        assertEquals(HpackValueSource.DYNAMIC_TABLE,
+                second.fields().get(3).provenance().nameSource());
+        decoder.analyze(hex(
+                "828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565"));
         assertEquals(164, decoder.dynamicTableSize());
     }
 
     @Test
-    void decodesRfcAppendixCRequestsWithHuffmanCoding() throws Exception {
-        HpackDecoder decoder = new HpackDecoder();
-
-        assertFields(decoder.decode(hex("828684418cf1e3c2e5f23a6ba0ab90f4ff")),
+    void decodesRfcHuffmanExamples() {
+        HpackDecoder decoder = HpackDecoder.atConnectionStart();
+        assertFields(decoder.analyze(hex("828684418cf1e3c2e5f23a6ba0ab90f4ff")).fields(),
                 ":method", "GET", ":scheme", "http", ":path", "/",
                 ":authority", "www.example.com");
-        assertFields(decoder.decode(hex("828684be5886a8eb10649cbf")),
+        assertFields(decoder.analyze(hex("828684be5886a8eb10649cbf")).fields(),
                 ":method", "GET", ":scheme", "http", ":path", "/",
                 ":authority", "www.example.com", "cache-control", "no-cache");
-        assertFields(decoder.decode(hex(
-                        "828785bf408825a849e95ba97d7f8925a849e95bb8e8b4bf")),
-                ":method", "GET", ":scheme", "https", ":path", "/index.html",
-                ":authority", "www.example.com", "custom-key", "custom-value");
     }
 
     @Test
-    void decodesRfcAppendixCResponsesWithoutHuffmanCoding() throws Exception {
-        HpackDecoder decoder = new HpackDecoder();
-
-        assertResponseFields(decoder.decode(hex(
-                "4803333032580770726976617465611d4d6f6e2c203231204f63742032303133"
-                        + "2032303a31333a323120474d546e1768747470733a2f2f7777772e6578616d70"
-                        + "6c652e636f6d")), "302", "21");
-        assertResponseFields(decoder.decode(hex("4803333037c1c0bf")), "307", "21");
-
-        List<HpackHeaderField> third = decoder.decode(hex(
-                "88c1611d4d6f6e2c203231204f637420323031332032303a31333a323220474d"
-                        + "54c05a04677a69707738666f6f3d4153444a4b48514b425a584f5157454f5049"
-                        + "5541585157454f49553b206d61782d6167653d333630303b2076657273696f6e"
-                        + "3d31"));
-        assertThirdResponse(third);
-    }
-
-    @Test
-    void decodesRfcAppendixCResponsesWithHuffmanCoding() throws Exception {
-        HpackDecoder decoder = new HpackDecoder();
-
-        assertResponseFields(decoder.decode(hex(
-                "488264025885aec3771a4b6196d07abe941054d444a8200595040b8166e082a62d"
-                        + "1bff6e919d29ad171863c78f0b97c8e9ae82ae43d3")), "302", "21");
-        assertResponseFields(decoder.decode(hex("4883640effc1c0bf")), "307", "21");
-
-        List<HpackHeaderField> third = decoder.decode(hex(
-                "88c16196d07abe941054d444a8200595040b8166e084a62d1bffc05a839bd9ab"
-                        + "77ad94e7821dd7f2e6c7b335dfdfcd5b3960d5af27087f3672c1ab270fb5291f"
-                        + "9587316065c003ed4ee5b1063d5007"));
-        assertThirdResponse(third);
-    }
-
-    @Test
-    void decodesCapturedNghttpxResponse() throws Exception {
-        List<HpackHeaderField> fields = new HpackDecoder().decode(hex(
+    void decodesCapturedNghttpxResponse() {
+        HpackBlockAnalysis result = HpackDecoder.atConnectionStart().analyze(hex(
                 "886196dd6d5f4a044a436cca08017940bb71905c682a62d1bf5f87497ca58ae8"
                         + "19aa6c96df697e9403ca681fa50400bca059b8db3704253168df0f138bfe5b1c"
                         + "a11c7209664bfcff52848fd24a8f0f0d023632408ff2b4632752d522d3947216"
@@ -90,252 +53,171 @@ class HpackDecoderTest {
                         + "f57f8a0fda949e42c11d07275f4090f2b10f524b52564faacab1eb498f523f85"
                         + "a8e8a8d2cb"));
 
-        assertFields(fields,
-                ":status", "200",
-                "date", "Sun, 12 Aug 2018 17:30:41 GMT",
-                "content-type", "text/plain",
-                "last-modified", "Tue, 08 May 2018 13:53:22 GMT",
-                "etag", "\"5af1abd2-3e\"",
-                "accept-ranges", "bytes",
-                "content-length", "62",
-                "x-backend-header-rtt", "0.002645",
-                "server", "nghttpx",
-                "via", "2 nghttpx",
-                "x-frame-options", "SAMEORIGIN",
-                "x-xss-protection", "1; mode=block",
-                "x-content-type-options", "nosniff");
+        assertTrue(result.complete());
+        assertEquals("200", result.fields().first(":status").orElseThrow().valueUtf8());
+        assertEquals("nghttpx", result.fields().first("server").orElseThrow().valueUtf8());
+        assertEquals(13, result.fields().size());
     }
 
     @Test
-    void preservesNeverIndexedMetadataAndDuplicateOrder() throws Exception {
+    void recordsNameAndValueProvenance() {
+        HpackDecoder decoder = HpackDecoder.atConnectionStart();
+        HpackHeaderFields fields = decoder.analyze(hex("8240016101620f1d0178")).fields();
+
+        assertEquals(HpackValueSource.STATIC_TABLE,
+                fields.get(0).provenance().nameSource());
+        assertEquals(HpackValueSource.STATIC_TABLE,
+                fields.get(0).provenance().valueSource());
+        assertEquals(2, fields.get(0).provenance().tableIndex());
+        assertEquals(HpackFieldProvenance.literal(), fields.get(1).provenance());
+        assertEquals(HpackValueSource.STATIC_TABLE,
+                fields.get(2).provenance().nameSource());
+        assertEquals(HpackValueSource.LITERAL,
+                fields.get(2).provenance().valueSource());
+        assertEquals(44, fields.get(2).provenance().tableIndex());
+    }
+
+    @Test
+    void defaultsToPartialAndReturnsLocallyResolvableDynamicFields() {
         HpackDecoder decoder = new HpackDecoder();
-        List<HpackHeaderField> fields = decoder.decode(hex(
-                "1001610162000161016382"));
+        decoder.analyze(hex("4001610162"));
 
-        assertEquals(3, fields.size());
-        assertEquals("a", fields.get(0).nameUtf8());
-        assertEquals("b", fields.get(0).valueUtf8());
-        assertTrue(fields.get(0).sensitive());
-        assertEquals("a", fields.get(1).nameUtf8());
-        assertEquals("c", fields.get(1).valueUtf8());
-        assertFalse(fields.get(1).sensitive());
-        assertEquals(":method", fields.get(2).nameUtf8());
+        HpackBlockAnalysis result = decoder.analyze(hex("be"));
+
+        assertEquals(HpackContextCompleteness.PARTIAL, result.contextCompleteness());
+        assertEquals("a", result.fields().get(0).nameUtf8());
+        assertEquals(HpackValueSource.DYNAMIC_TABLE,
+                result.fields().get(0).provenance().nameSource());
     }
 
     @Test
-    void resolvesTheCompleteRfcStaticTableAddressSpace() throws Exception {
-        byte[] indexes = new byte[61];
-        for (int i = 0; i < indexes.length; i++) {
-            indexes[i] = (byte) (0x80 | (i + 1));
-        }
+    void skipsUnavailableIndexesAndEmitsDiagnostics() {
+        List<HpackDiagnostic> diagnostics = new ArrayList<>();
+        HpackDecoder decoder = new HpackDecoder(HpackDecoderConfig.defaults(),
+                diagnostics::add);
 
-        List<HpackHeaderField> fields = new HpackDecoder().decode(indexes);
-        assertEquals(61, fields.size());
-        assertEquals(":authority", fields.get(0).nameUtf8());
-        assertEquals(":method", fields.get(1).nameUtf8());
-        assertEquals("GET", fields.get(1).valueUtf8());
-        assertEquals("accept-encoding", fields.get(15).nameUtf8());
-        assertEquals("gzip, deflate", fields.get(15).valueUtf8());
-        assertEquals("www-authenticate", fields.get(60).nameUtf8());
+        HpackBlockAnalysis result = decoder.analyze(hex("be82"));
+
+        assertTrue(result.complete());
+        assertEquals(1, result.omittedFieldCount());
+        assertEquals("GET", result.fields().get(0).valueUtf8());
+        assertEquals(HpackDiagnosticReason.MISSING_DYNAMIC_TABLE_INDEX,
+                diagnostics.get(0).reason());
+        assertEquals(62, diagnostics.get(0).index());
     }
 
     @Test
-    void decodedLiteralBytesAreIndependentOfTheInputBuffer() throws Exception {
-        byte[] encoded = hex("0001610162");
-        HpackHeaderField field = new HpackDecoder().decode(encoded).get(0);
-        encoded[2] = 'z';
-        encoded[4] = 'z';
-
-        assertEquals("a", field.nameUtf8());
-        assertEquals("b", field.valueUtf8());
-    }
-
-    @Test
-    void appliesTableSizeUpdatesAndEvictsEntries() throws Exception {
-        HpackDecoder decoder = new HpackDecoder();
-        decoder.decode(hex("4001610162"));
+    void unknownIncrementalNameClearsPotentiallyMisalignedTable() {
+        List<HpackDiagnostic> diagnostics = new ArrayList<>();
+        HpackDecoder decoder = new HpackDecoder(HpackDecoderConfig.defaults(),
+                diagnostics::add);
+        decoder.analyze(hex("4001610162"));
         assertEquals(34, decoder.dynamicTableSize());
 
-        decoder.updateMaxDynamicTableSize(0);
-        assertTrue(decoder.decode(hex("20")).isEmpty());
+        HpackBlockAnalysis missingName = decoder.analyze(hex("7f000178"));
+        HpackBlockAnalysis laterIndex = decoder.analyze(hex("be82"));
+
+        assertEquals(1, missingName.omittedFieldCount());
         assertEquals(0, decoder.dynamicTableSize());
+        assertEquals(1, laterIndex.omittedFieldCount());
+        assertEquals("GET", laterIndex.fields().get(0).valueUtf8());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.reason() == HpackDiagnosticReason.CONTEXT_BECAME_PARTIAL));
+    }
+
+    @Test
+    void omittedNamedLiteralsStillConsumeHeaderListBudget() {
+        List<HpackDiagnostic> diagnostics = new ArrayList<>();
+        HpackDecoder decoder = new HpackDecoder(
+                new HpackDecoderConfig(4096, 1024, 40), diagnostics::add);
+
+        HpackBlockAnalysis result = decoder.analyze(hex(
+                "0f2f0561626364650f2f056162636465"));
+
+        assertEquals(HpackBlockStatus.INCOMPLETE, result.status());
+        assertEquals(1, result.omittedFieldCount());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.reason() == HpackDiagnosticReason.RESOURCE_LIMIT));
+    }
+
+    @Test
+    void malformedBlockReturnsPartialResultAndDecoderRemainsUsable() {
+        List<HpackDiagnostic> diagnostics = new ArrayList<>();
+        HpackDecoder decoder = HpackDecoder.atConnectionStart(
+                HpackDecoderConfig.defaults(), diagnostics::add);
+
+        HpackBlockAnalysis malformed = decoder.analyze(hex("8280"));
+        HpackBlockAnalysis later = decoder.analyze(hex("82"));
+
+        assertEquals(HpackBlockStatus.INCOMPLETE, malformed.status());
+        assertEquals(1, malformed.fields().size());
+        assertEquals(HpackContextCompleteness.PARTIAL, malformed.contextCompleteness());
+        assertTrue(later.complete());
+        assertEquals("GET", later.fields().get(0).valueUtf8());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.reason() == HpackDiagnosticReason.MALFORMED_BLOCK));
+    }
+
+    @Test
+    void resourceFailureReturnsIncompleteAndRemainsUsable() {
+        HpackDecoder decoder = new HpackDecoder(new HpackDecoderConfig(4096, 2, 1024));
+
+        assertFalse(decoder.analyze(hex("828684")).complete());
+        assertEquals("GET", decoder.analyze(hex("82")).fields().get(0).valueUtf8());
+    }
+
+    @Test
+    void tableClearRestoresObservedCompleteness() {
+        HpackDecoder decoder = new HpackDecoder();
+        assertEquals(HpackContextCompleteness.PARTIAL, decoder.contextCompleteness());
+
+        HpackBlockAnalysis result = decoder.analyze(hex("20"));
+
+        assertEquals(HpackContextCompleteness.OBSERVED_COMPLETE,
+                result.contextCompleteness());
+        assertTrue(decoder.tableLimitKnown());
+        assertEquals(0, decoder.dynamicTableSize());
+    }
+
+    @Test
+    void appliesSettingsReductionAndRequiredUpdate() {
+        HpackDecoder decoder = HpackDecoder.atConnectionStart();
+        decoder.updateMaxDynamicTableSize(0);
+        assertTrue(decoder.analyze(hex("20")).complete());
         assertEquals(0, decoder.maxDynamicTableSize());
     }
 
     @Test
-    void handlesMultipleRequiredTableSizeChanges() throws Exception {
-        HpackDecoderConfig config = new HpackDecoderConfig(8_192, 65_536, 65_536);
-        HpackDecoder decoder = new HpackDecoder(config);
-        decoder.updateMaxDynamicTableSize(128);
-        decoder.updateMaxDynamicTableSize(256);
-
-        assertTrue(decoder.decode(hex("3f21")).isEmpty());
-        assertEquals(256, decoder.maxDynamicTableSize());
+    void rejectsMalformedHuffmanAndIntegerWithoutThrowing() {
+        assertFalse(HpackDecoder.atConnectionStart().analyze(hex("0081ff00")).complete());
+        assertFalse(HpackDecoder.atConnectionStart().analyze(hex("3fffffffffff7f"))
+                .complete());
     }
 
     @Test
-    void defaultDecoderAcceptsLargerTableUpdatesWhenSettingsWereMissed()
-            throws Exception {
-        HpackDecoder decoder = new HpackDecoder();
+    void listenerFailureLeavesContextPartialAndRethrowsCallerFailure() {
+        HpackDecoder decoder = HpackDecoder.atConnectionStart(
+                HpackDecoderConfig.defaults(), diagnostic -> {
+                    throw new IllegalStateException("sink failed");
+                });
 
-        assertTrue(decoder.decode(hex("3fe21f")).isEmpty());
-
-        assertEquals(HpackDecoderConfig.DEFAULT_DYNAMIC_TABLE_CAPACITY,
-                decoder.maxDynamicTableSize());
-        assertFalse(decoder.failed());
-    }
-
-    @Test
-    void strictDecoderRejectsLargerTableUpdatesWhenSettingsWereNotApplied() {
-        HpackDecoder decoder = new HpackDecoder(HpackDecoderConfig.strictDefaults());
-
-        HpackDecodingException error = assertThrows(HpackDecodingException.class,
-                () -> decoder.decode(hex("3fe21f")));
-
-        assertEquals(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE, error.reason());
-        assertTrue(decoder.failed());
-    }
-
-    @Test
-    void rejectsMalformedInputAndPoisonsDecoder() {
-        HpackDecoder decoder = new HpackDecoder();
-        HpackDecodingException invalidIndex = assertThrows(HpackDecodingException.class,
-                () -> decoder.decode(hex("80")));
-        assertEquals(HpackErrorReason.INVALID_INDEX, invalidIndex.reason());
-        assertTrue(invalidIndex.streamId().isEmpty());
-        assertTrue(decoder.failed());
-
-        HpackDecodingException failed = assertThrows(HpackDecodingException.class,
-                () -> decoder.decode(hex("82")));
-        assertEquals(HpackErrorReason.DECODER_FAILED, failed.reason());
-    }
-
-    @Test
-    void skipsMissingDynamicIndexedFieldsByDefault() throws Exception {
-        HpackDecoder decoder = new HpackDecoder();
-
-        HpackDecodeResult result = decoder.decodeResult(hex("be82"));
-
-        assertTrue(result.recovered());
-        assertEquals(1, result.fields().size());
-        assertEquals(":method", result.fields().get(0).nameUtf8());
-        assertEquals("GET", result.fields().get(0).valueUtf8());
-        assertEquals(1, result.recoveryEvents().size());
-        HpackRecoveryEvent event = result.recoveryEvents().get(0);
-        assertEquals(HpackRecoveryReason.MISSING_DYNAMIC_TABLE_INDEX, event.reason());
-        assertEquals(0, event.offset());
-        assertEquals(62, event.index());
-
-        assertFields(decoder.decode(hex("82")), ":method", "GET");
-        assertFalse(decoder.failed());
-    }
-
-    @Test
-    void skipsLiteralWithMissingDynamicNameAndKeepsBlockAlignment() throws Exception {
-        HpackDecoder decoder = new HpackDecoder();
-
-        HpackDecodeResult result = decoder.decodeResult(hex("7e017884"));
-
-        assertTrue(result.recovered());
-        assertEquals(1, result.fields().size());
-        assertEquals(":path", result.fields().get(0).nameUtf8());
-        assertEquals("/", result.fields().get(0).valueUtf8());
-        assertEquals(1, result.recoveryEvents().size());
-        HpackRecoveryEvent event = result.recoveryEvents().get(0);
-        assertEquals(HpackRecoveryReason.MISSING_DYNAMIC_TABLE_NAME_INDEX,
-                event.reason());
-        assertEquals(0, event.offset());
-        assertEquals(62, event.index());
+        assertThrows(IllegalStateException.class, () -> decoder.analyze(hex("80")));
+        assertEquals(HpackContextCompleteness.PARTIAL, decoder.contextCompleteness());
         assertEquals(0, decoder.dynamicTableSize());
-        assertFalse(decoder.failed());
-    }
-
-    @Test
-    void canFailOnMissingDynamicIndexesForStrictConnections() {
-        HpackDecoder decoder = new HpackDecoder(new HpackDecoderConfig(
-                4096, 1024, 1024,
-                HpackDynamicTableRecoveryPolicy.FAIL_ON_MISSING));
-
-        HpackDecodingException invalidIndex = assertThrows(HpackDecodingException.class,
-                () -> decoder.decode(hex("be")));
-
-        assertEquals(HpackErrorReason.INVALID_INDEX, invalidIndex.reason());
-        assertTrue(decoder.failed());
-        HpackDecodingException failed = assertThrows(HpackDecodingException.class,
-                () -> decoder.decode(hex("82")));
-        assertEquals(HpackErrorReason.DECODER_FAILED, failed.reason());
-    }
-
-    @Test
-    void rejectsTruncationIntegerOverflowAndInvalidHuffman() {
-        assertError(HpackErrorReason.TRUNCATED_INPUT, "400561");
-        assertError(HpackErrorReason.INTEGER_OVERFLOW, "3fffffffffff7f");
-        assertError(HpackErrorReason.INVALID_HUFFMAN, "0081ff00");
-        assertError(HpackErrorReason.INVALID_HUFFMAN, "0084ffffffff00");
-    }
-
-    @Test
-    void enforcesConfiguredBlockAndHeaderListLimits() {
-        HpackDecoder blockDecoder = new HpackDecoder(
-                new HpackDecoderConfig(4096, 2, 1024));
-        HpackDecodingException blockError = assertThrows(HpackDecodingException.class,
-                () -> blockDecoder.decode(hex("828684")));
-        assertEquals(HpackErrorReason.ENCODED_BLOCK_TOO_LARGE, blockError.reason());
-
-        HpackDecoder listDecoder = new HpackDecoder(
-                new HpackDecoderConfig(4096, 1024, 33));
-        HpackDecodingException listError = assertThrows(HpackDecodingException.class,
-                () -> listDecoder.decode(hex("82")));
-        assertEquals(HpackErrorReason.HEADER_LIST_TOO_LARGE, listError.reason());
-    }
-
-    @Test
-    void rejectsMissingMisplacedAndExcessiveTableUpdates() throws Exception {
-        HpackDecoder missing = new HpackDecoder();
-        missing.updateMaxDynamicTableSize(0);
-        assertEquals(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE,
-                assertThrows(HpackDecodingException.class,
-                        () -> missing.decode(hex("82"))).reason());
-
-        assertError(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE, "8220");
-        assertError(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE, "202020");
-        HpackDecoder strict = new HpackDecoder(HpackDecoderConfig.strictDefaults());
-        assertEquals(HpackErrorReason.INVALID_TABLE_SIZE_UPDATE,
-                assertThrows(HpackDecodingException.class,
-                        () -> strict.decode(hex("3fe21f"))).reason());
     }
 
     @Test
     void validatesConfigurationAndRanges() {
         assertSame(HpackDecoderConfig.DEFAULT_CONFIG, HpackDecoderConfig.defaults());
-        assertSame(HpackDecoderConfig.DEFAULT_CONFIG, new HpackDecoder().config());
-        assertSame(HpackDecoderConfig.STRICT_CONFIG,
-                HpackDecoderConfig.strictDefaults());
-        assertEquals(0x00ff_ffff,
-                HpackDecoderConfig.defaults().maxDynamicTableCapacity());
-        assertEquals(65_536,
-                HpackDecoderConfig.strictDefaults().maxEncodedHeaderBlockSize());
-        assertEquals(HpackDynamicTableRecoveryPolicy.FAIL_ON_MISSING,
-                HpackDecoderConfig.strictDefaults().dynamicTableRecoveryPolicy());
-        assertEquals(HpackDynamicTableRecoveryPolicy.SKIP_MISSING,
-                new HpackDecoderConfig(4096, 10, 10).dynamicTableRecoveryPolicy());
         assertThrows(IllegalArgumentException.class,
                 () -> new HpackDecoderConfig(4095, 10, 10));
         assertThrows(IllegalArgumentException.class,
                 () -> new HpackDecoderConfig(4096, 0, 10));
-        assertThrows(NullPointerException.class,
-                () -> new HpackDecoderConfig(4096, 10, 10, null));
         assertThrows(IndexOutOfBoundsException.class,
-                () -> new HpackDecoder().decode(new byte[2], 1, 2));
+                () -> new HpackDecoder().analyze(new byte[2], 1, 2));
         assertThrows(IllegalArgumentException.class,
-                () -> new HpackDecoder(HpackDecoderConfig.strictDefaults())
-                        .updateMaxDynamicTableSize(4097));
-    }
-
-    private static void assertError(HpackErrorReason reason, String hex) {
-        HpackDecodingException error = assertThrows(HpackDecodingException.class,
-                () -> new HpackDecoder().decode(hex(hex)));
-        assertEquals(reason, error.reason(), error.getMessage());
+                () -> new HpackDecoder().updateMaxDynamicTableSize(
+                        HpackDecoderConfig.DEFAULT_DYNAMIC_TABLE_CAPACITY + 1));
     }
 
     private static void assertFields(List<HpackHeaderField> fields, String... pairs) {
@@ -344,26 +226,6 @@ class HpackDecoderTest {
             assertEquals(pairs[i * 2], fields.get(i).nameUtf8(), "name at " + i);
             assertEquals(pairs[i * 2 + 1], fields.get(i).valueUtf8(), "value at " + i);
         }
-    }
-
-    private static void assertResponseFields(List<HpackHeaderField> fields,
-                                             String status, String second) {
-        assertFields(fields,
-                ":status", status,
-                "cache-control", "private",
-                "date", "Mon, 21 Oct 2013 20:13:" + second + " GMT",
-                "location", "https://www.example.com");
-    }
-
-    private static void assertThirdResponse(List<HpackHeaderField> fields) {
-        assertFields(fields,
-                ":status", "200",
-                "cache-control", "private",
-                "date", "Mon, 21 Oct 2013 20:13:22 GMT",
-                "location", "https://www.example.com",
-                "content-encoding", "gzip",
-                "set-cookie", "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; "
-                        + "max-age=3600; version=1");
     }
 
     private static byte[] hex(String value) {

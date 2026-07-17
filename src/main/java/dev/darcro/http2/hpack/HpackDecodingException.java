@@ -3,7 +3,7 @@ package dev.darcro.http2.hpack;
 import java.util.OptionalInt;
 
 /** Indicates an invalid or resource-limited HPACK header block. */
-public final class HpackDecodingException extends Exception {
+final class HpackDecodingException extends Exception {
     private final HpackErrorReason reason;
     private final int offset;
     private final int streamId;
@@ -23,17 +23,17 @@ public final class HpackDecodingException extends Exception {
         this.streamId = streamId;
     }
 
-    public HpackErrorReason reason() {
+    HpackErrorReason reason() {
         return reason;
     }
 
     /** Byte offset relative to the start of the encoded header block. */
-    public int offset() {
+    int offset() {
         return offset;
     }
 
     /** Stream context when decoding was initiated by a frame assembler. */
-    public OptionalInt streamId() {
+    OptionalInt streamId() {
         return streamId < 0 ? OptionalInt.empty() : OptionalInt.of(streamId);
     }
 

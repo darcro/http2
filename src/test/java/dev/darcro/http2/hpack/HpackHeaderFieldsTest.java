@@ -66,8 +66,7 @@ class HpackHeaderFieldsTest {
 
     @Test
     void wrapsFieldsReturnedDirectlyByTheDecoder() throws Exception {
-        HpackHeaderFields fields = HpackHeaderFields.copyOf(
-                new HpackDecoder().decode(hex("828684")));
+        HpackHeaderFields fields = new HpackDecoder().analyze(hex("828684")).fields();
 
         assertEquals("GET", fields.first(":method").orElseThrow().valueUtf8());
         assertTrue(fields.contains(":scheme"));
@@ -105,7 +104,8 @@ class HpackHeaderFieldsTest {
 
     private static DecodedHeaderBlock block(List<HpackHeaderField> fields) {
         return new DecodedHeaderBlock(HeaderBlockOrigin.HEADERS, 1, false,
-                OptionalInt.empty(), fields);
+                OptionalInt.empty(), fields, HpackBlockStatus.COMPLETE, 0,
+                HpackContextCompleteness.OBSERVED_COMPLETE);
     }
 
     private static HpackHeaderField field(String name, String value) {

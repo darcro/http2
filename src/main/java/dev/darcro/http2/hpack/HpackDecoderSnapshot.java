@@ -5,19 +5,25 @@ import java.util.OptionalInt;
 
 /** Immutable, inspectable state for resuming one HPACK decoding context. */
 public final class HpackDecoderSnapshot {
-    public static final int FORMAT_VERSION = 1;
+    public static final int FORMAT_VERSION = 2;
 
     private final int dynamicTableLimit;
     private final int maximumTableSize;
     private final int pendingMinimum;
+    private final HpackContextCompleteness contextCompleteness;
+    private final boolean tableLimitKnown;
     private final List<HpackDynamicTableEntry> dynamicTableEntries;
 
     HpackDecoderSnapshot(int dynamicTableLimit, int maximumTableSize,
                          int pendingMinimum,
+                         HpackContextCompleteness contextCompleteness,
+                         boolean tableLimitKnown,
                          List<HpackDynamicTableEntry> dynamicTableEntries) {
         this.dynamicTableLimit = dynamicTableLimit;
         this.maximumTableSize = maximumTableSize;
         this.pendingMinimum = pendingMinimum;
+        this.contextCompleteness = contextCompleteness;
+        this.tableLimitKnown = tableLimitKnown;
         this.dynamicTableEntries = List.copyOf(dynamicTableEntries);
     }
 
@@ -31,6 +37,14 @@ public final class HpackDecoderSnapshot {
 
     public OptionalInt pendingMinimum() {
         return pendingMinimum < 0 ? OptionalInt.empty() : OptionalInt.of(pendingMinimum);
+    }
+
+    public HpackContextCompleteness contextCompleteness() {
+        return contextCompleteness;
+    }
+
+    public boolean tableLimitKnown() {
+        return tableLimitKnown;
     }
 
     /** Entries in HPACK index order, newest first. */

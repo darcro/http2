@@ -1,6 +1,5 @@
 package dev.darcro.http2.hpack;
 
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -8,19 +7,19 @@ import java.util.OptionalInt;
 /** A decoded field block plus metadata from its originating HTTP/2 frame. */
 public record DecodedHeaderBlock(HeaderBlockOrigin origin, int streamId,
                                  boolean endStream, OptionalInt promisedStreamId,
-                                 List<HpackHeaderField> fields,
-                                 List<HpackRecoveryEvent> recoveryEvents) {
-    public DecodedHeaderBlock(HeaderBlockOrigin origin, int streamId,
-                              boolean endStream, OptionalInt promisedStreamId,
-                              List<HpackHeaderField> fields) {
-        this(origin, streamId, endStream, promisedStreamId, fields, List.of());
-    }
+                                 java.util.List<HpackHeaderField> fields,
+                                 HpackBlockStatus analysisStatus, int omittedFieldCount,
+                                 HpackContextCompleteness contextCompleteness) {
 
     public DecodedHeaderBlock {
         Objects.requireNonNull(origin, "origin");
         Objects.requireNonNull(promisedStreamId, "promisedStreamId");
         fields = HpackHeaderFields.copyOf(fields);
-        recoveryEvents = List.copyOf(recoveryEvents);
+        Objects.requireNonNull(analysisStatus, "analysisStatus");
+        Objects.requireNonNull(contextCompleteness, "contextCompleteness");
+        if (omittedFieldCount < 0) {
+            throw new IllegalArgumentException("omittedFieldCount must be non-negative");
+        }
     }
 
     /** Returns the ordered fields with efficient name lookup operations. */
@@ -58,8 +57,9 @@ public record DecodedHeaderBlock(HeaderBlockOrigin origin, int streamId,
         return headerFields().hasDuplicatePseudoHeaders();
     }
 
-    /** Returns whether best-effort recovery skipped any unavailable entries. */
+    /** Returns whether analysis was incomplete or omitted any fields. */
     public boolean recovered() {
-        return !recoveryEvents.isEmpty();
+        return analysisStatus == HpackBlockStatus.INCOMPLETE || omittedFieldCount != 0
+                || contextCompleteness == HpackContextCompleteness.PARTIAL;
     }
 }

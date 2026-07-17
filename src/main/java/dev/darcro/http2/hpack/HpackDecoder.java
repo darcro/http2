@@ -13,31 +13,71 @@ public final class HpackDecoder {
     private static final int STATIC_TABLE_LENGTH = HpackTables.STATIC_TABLE.length;
 
     private final HpackDecoderConfig config;
+    private final HpackDiagnosticSink diagnosticSink;
     private final List<HpackTables.Entry> dynamicTable = new ArrayList<>();
     private int dynamicTableSize;
     private int dynamicTableLimit = 4_096;
     private int maximumTableSize = 4_096;
     private int pendingMinimum = -1;
-    private boolean failed;
+    private boolean tableLimitKnown;
+    private HpackContextCompleteness contextCompleteness;
+    private int diagnosticStreamId = -1;
 
     public HpackDecoder() {
-        this(HpackDecoderConfig.defaults());
+        this(HpackDecoderConfig.defaults(), HpackDiagnosticSink.noop(),
+                HpackContextCompleteness.PARTIAL, false);
     }
 
     public HpackDecoder(HpackDecoderConfig config) {
+        this(config, HpackDiagnosticSink.noop(), HpackContextCompleteness.PARTIAL,
+                false);
+    }
+
+    public HpackDecoder(HpackDecoderConfig config, HpackDiagnosticSink diagnosticSink) {
+        this(config, diagnosticSink, HpackContextCompleteness.PARTIAL, false);
+    }
+
+    private HpackDecoder(HpackDecoderConfig config, HpackDiagnosticSink diagnosticSink,
+                         HpackContextCompleteness contextCompleteness,
+                         boolean tableLimitKnown) {
         this.config = Objects.requireNonNull(config, "config");
+        this.diagnosticSink = Objects.requireNonNull(diagnosticSink, "diagnosticSink");
+        this.contextCompleteness = Objects.requireNonNull(contextCompleteness,
+                "contextCompleteness");
+        this.tableLimitKnown = tableLimitKnown;
         maximumTableSize = config.maxDynamicTableCapacity();
+    }
+
+    public static HpackDecoder atConnectionStart() {
+        return atConnectionStart(HpackDecoderConfig.defaults(), HpackDiagnosticSink.noop());
+    }
+
+    public static HpackDecoder atConnectionStart(HpackDecoderConfig config,
+                                                  HpackDiagnosticSink diagnosticSink) {
+        HpackDecoder decoder = new HpackDecoder(config, diagnosticSink,
+                HpackContextCompleteness.OBSERVED_COMPLETE, true);
+        decoder.maximumTableSize = 4_096;
+        return decoder;
     }
 
     /** Restores a healthy decoder under caller-supplied local resource limits. */
     public static HpackDecoder restore(HpackDecoderSnapshot snapshot,
                                        HpackDecoderConfig config)
             throws HpackSnapshotException {
+        return restore(snapshot, config, HpackDiagnosticSink.noop());
+    }
+
+    public static HpackDecoder restore(HpackDecoderSnapshot snapshot,
+                                       HpackDecoderConfig config,
+                                       HpackDiagnosticSink diagnosticSink)
+            throws HpackSnapshotException {
         Objects.requireNonNull(snapshot, "snapshot");
         Objects.requireNonNull(config, "config");
         validateSnapshotConfiguration(snapshot, config);
 
-        HpackDecoder decoder = new HpackDecoder(config);
+        Objects.requireNonNull(diagnosticSink, "diagnosticSink");
+        HpackDecoder decoder = new HpackDecoder(config, diagnosticSink,
+                snapshot.contextCompleteness(), snapshot.tableLimitKnown());
         decoder.dynamicTableLimit = snapshot.dynamicTableLimit();
         decoder.maximumTableSize = snapshot.maximumTableSize();
         decoder.pendingMinimum = snapshot.pendingMinimum().orElse(-1);
@@ -54,8 +94,12 @@ public final class HpackDecoder {
         return config;
     }
 
-    public boolean failed() {
-        return failed;
+    public HpackContextCompleteness contextCompleteness() {
+        return contextCompleteness;
+    }
+
+    public boolean tableLimitKnown() {
+        return tableLimitKnown;
     }
 
     public int dynamicTableSize() {
@@ -66,17 +110,14 @@ public final class HpackDecoder {
         return maximumTableSize;
     }
 
-    /** Captures immutable state at the boundary between decode calls. */
+    /** Captures immutable state at the boundary between analysis calls. */
     public HpackDecoderSnapshot snapshot() {
-        if (failed) {
-            throw new IllegalStateException("Cannot snapshot a failed HPACK decoder");
-        }
         List<HpackDynamicTableEntry> entries = new ArrayList<>(dynamicTable.size());
         for (HpackTables.Entry entry : dynamicTable) {
             entries.add(new HpackDynamicTableEntry(entry.name(), entry.value()));
         }
         return new HpackDecoderSnapshot(dynamicTableLimit, maximumTableSize,
-                pendingMinimum, entries);
+                pendingMinimum, contextCompleteness, tableLimitKnown, entries);
     }
 
     /**
@@ -84,9 +125,6 @@ public final class HpackDecoder {
      * determined that the setting takes effect.
      */
     public void updateMaxDynamicTableSize(int maximumSize) {
-        if (failed) {
-            throw new IllegalStateException("HPACK decoder is in a failed state");
-        }
         if (maximumSize < 0 || maximumSize > config.maxDynamicTableCapacity()) {
             throw new IllegalArgumentException("maximumSize must be between 0 and "
                     + config.maxDynamicTableCapacity());
@@ -98,71 +136,65 @@ public final class HpackDecoder {
         maximumTableSize = maximumSize;
     }
 
-    public List<HpackHeaderField> decode(byte[] headerBlock)
-            throws HpackDecodingException {
+    public HpackBlockAnalysis analyze(byte[] headerBlock) {
         Objects.requireNonNull(headerBlock, "headerBlock");
-        return decode(headerBlock, 0, headerBlock.length);
+        return analyze(headerBlock, 0, headerBlock.length);
     }
 
-    public List<HpackHeaderField> decode(byte[] headerBlock, int offset, int length)
-            throws HpackDecodingException {
+    public HpackBlockAnalysis analyze(byte[] headerBlock, int offset, int length) {
         Objects.requireNonNull(headerBlock, "headerBlock");
         Objects.checkFromIndexSize(offset, length, headerBlock.length);
-        return decodeFragments(List.of(ByteSequence.wrap(headerBlock, offset, length)), length)
-                .fields();
+        return analyzeFragments(List.of(ByteSequence.wrap(headerBlock, offset, length)),
+                length);
     }
 
-    public List<HpackHeaderField> decode(ByteSequence headerBlock)
-            throws HpackDecodingException {
+    public HpackBlockAnalysis analyze(ByteSequence headerBlock) {
         Objects.requireNonNull(headerBlock, "headerBlock");
-        return decodeFragments(List.of(headerBlock), headerBlock.length()).fields();
+        return analyzeFragments(List.of(headerBlock), headerBlock.length());
     }
 
-    public HpackDecodeResult decodeResult(byte[] headerBlock)
-            throws HpackDecodingException {
-        Objects.requireNonNull(headerBlock, "headerBlock");
-        return decodeResult(headerBlock, 0, headerBlock.length);
-    }
-
-    public HpackDecodeResult decodeResult(byte[] headerBlock, int offset, int length)
-            throws HpackDecodingException {
-        Objects.requireNonNull(headerBlock, "headerBlock");
-        Objects.checkFromIndexSize(offset, length, headerBlock.length);
-        return decodeFragments(List.of(ByteSequence.wrap(headerBlock, offset, length)), length);
-    }
-
-    public HpackDecodeResult decodeResult(ByteSequence headerBlock)
-            throws HpackDecodingException {
-        Objects.requireNonNull(headerBlock, "headerBlock");
-        return decodeFragments(List.of(headerBlock), headerBlock.length());
-    }
-
-    HpackDecodeResult decodeFragments(List<ByteSequence> fragments, long totalLength)
-            throws HpackDecodingException {
-        if (failed) {
-            throw new HpackDecodingException(HpackErrorReason.DECODER_FAILED, 0,
-                    "HPACK decoder is in a failed state");
+    HpackBlockAnalysis analyzeFragments(List<ByteSequence> fragments, long totalLength) {
+        if (totalLength > config.maxEncodedHeaderBlockSize()) {
+            String message = "Encoded header block exceeds configured limit";
+            emit(new HpackDiagnostic(HpackDiagnosticReason.RESOURCE_LIMIT, 0, -1,
+                    -1, message));
+            loseContext(true, message);
+            return incomplete(List.of(), 0);
         }
+        return decodeBlock(new Input(fragments, (int) totalLength));
+    }
+
+    HpackBlockAnalysis analyzeFragments(List<ByteSequence> fragments, long totalLength,
+                                        int streamId) {
+        diagnosticStreamId = streamId;
         try {
-            if (totalLength > config.maxEncodedHeaderBlockSize()) {
-                throw error(HpackErrorReason.ENCODED_BLOCK_TOO_LARGE, 0,
-                        "Encoded header block exceeds configured limit");
-            }
-            return decodeBlock(new Input(fragments, (int) totalLength));
-        } catch (HpackDecodingException exception) {
-            failed = true;
-            throw exception;
+            return analyzeFragments(fragments, totalLength);
+        } finally {
+            diagnosticStreamId = -1;
         }
     }
 
-    private HpackDecodeResult decodeBlock(Input input) throws HpackDecodingException {
+    void discardObservedContext(String message) {
+        loseContext(true, message);
+    }
+
+    void invalidateAfterListenerFailure() {
+        dynamicTable.clear();
+        dynamicTableSize = 0;
+        contextCompleteness = HpackContextCompleteness.PARTIAL;
+        tableLimitKnown = false;
+        pendingMinimum = -1;
+    }
+
+    private HpackBlockAnalysis decodeBlock(Input input) {
         List<HpackHeaderField> fields = new ArrayList<>();
-        List<HpackRecoveryEvent> recoveryEvents = new ArrayList<>();
+        int omittedFields = 0;
         long headerListSize = 0;
         boolean fieldSeen = false;
         int tableUpdates = 0;
         boolean updateRequired = pendingMinimum >= 0;
 
+        try {
         while (input.hasRemaining()) {
             int representationOffset = input.position();
             int first = input.read();
@@ -195,6 +227,10 @@ public final class HpackDecoder {
                     updateRequired = false;
                 }
                 setDynamicTableLimit(newSize);
+                tableLimitKnown = true;
+                if (newSize == 0) {
+                    contextCompleteness = HpackContextCompleteness.OBSERVED_COMPLETE;
+                }
                 continue;
             }
 
@@ -202,13 +238,14 @@ public final class HpackDecoder {
             HpackHeaderField field;
             if ((first & 0x80) != 0) {
                 int index = decodeInteger(first, 7, input, representationOffset);
-                HpackTables.Entry entry = get(index, representationOffset,
-                        HpackRecoveryReason.MISSING_DYNAMIC_TABLE_INDEX,
-                        recoveryEvents);
-                if (entry == null) {
+                Lookup lookup = get(index, representationOffset,
+                        HpackDiagnosticReason.MISSING_DYNAMIC_TABLE_INDEX);
+                if (lookup == null) {
+                    omittedFields++;
                     continue;
                 }
-                field = field(entry.name(), entry.value(), false);
+                field = field(lookup.entry().name(), lookup.entry().value(), false,
+                        HpackFieldProvenance.indexed(lookup.source(), index));
             } else {
                 boolean incremental = (first & 0x40) != 0;
                 boolean sensitive = !incremental && (first & 0x10) != 0;
@@ -220,17 +257,16 @@ public final class HpackDecoder {
                             representationOffset,
                             "Decoded header list exceeds configured limit");
                 }
-                HpackTables.Entry nameEntry = null;
+                Lookup nameLookup = null;
                 boolean missingName = false;
                 byte[] name;
                 if (nameIndex == 0) {
                     name = decodeString(input, (int) available);
                 } else {
-                    nameEntry = get(nameIndex, representationOffset,
-                            HpackRecoveryReason.MISSING_DYNAMIC_TABLE_NAME_INDEX,
-                            recoveryEvents);
-                    missingName = nameEntry == null;
-                    name = missingName ? null : nameEntry.name();
+                    nameLookup = get(nameIndex, representationOffset,
+                            HpackDiagnosticReason.MISSING_DYNAMIC_TABLE_NAME_INDEX);
+                    missingName = nameLookup == null;
+                    name = missingName ? null : nameLookup.entry().name();
                 }
                 if (!missingName && name.length > available) {
                     throw error(HpackErrorReason.HEADER_LIST_TOO_LARGE,
@@ -241,9 +277,21 @@ public final class HpackDecoder {
                         ? (int) available : (int) available - name.length;
                 byte[] value = decodeString(input, maxValue);
                 if (missingName) {
+                    // The name length is unknowable, but the known value and
+                    // per-field overhead must still consume the resource
+                    // budget for best-effort output.
+                    headerListSize += value.length + 32L;
+                    omittedFields++;
+                    if (incremental) {
+                        loseContext(false,
+                                "Unknown incrementally indexed field changed table positions");
+                    }
                     continue;
                 }
-                field = field(name, value, sensitive);
+                HpackFieldProvenance provenance = nameIndex == 0
+                        ? HpackFieldProvenance.literal()
+                        : HpackFieldProvenance.indexedName(nameLookup.source(), nameIndex);
+                field = field(name, value, sensitive, provenance);
                 if (incremental) {
                     add(name, value);
                 }
@@ -263,7 +311,17 @@ public final class HpackDecoder {
                     "Required dynamic table size update is missing");
         }
         pendingMinimum = -1;
-        return new HpackDecodeResult(HpackHeaderFields.copyOf(fields), recoveryEvents);
+        return new HpackBlockAnalysis(HpackHeaderFields.copyOf(fields),
+                HpackBlockStatus.COMPLETE, omittedFields, contextCompleteness);
+        } catch (HpackDecodingException exception) {
+            HpackDiagnosticReason reason = isResourceError(exception.reason())
+                    ? HpackDiagnosticReason.RESOURCE_LIMIT
+                    : HpackDiagnosticReason.MALFORMED_BLOCK;
+            emit(new HpackDiagnostic(reason, exception.offset(), -1, -1,
+                    exception.getMessage()));
+            loseContext(true, exception.getMessage());
+            return incomplete(fields, omittedFields);
+        }
     }
 
     private int decodeInteger(int first, int prefixBits, Input input, int offset)
@@ -314,28 +372,27 @@ public final class HpackDecoder {
                 : encoded;
     }
 
-    private HpackTables.Entry get(int index, int offset,
-                                  HpackRecoveryReason recoveryReason,
-                                  List<HpackRecoveryEvent> recoveryEvents)
+    private Lookup get(int index, int offset, HpackDiagnosticReason reason)
             throws HpackDecodingException {
         if (index <= 0) {
             throw error(HpackErrorReason.INVALID_INDEX, offset,
                     "HPACK table index zero is invalid");
         }
         if (index <= STATIC_TABLE_LENGTH) {
-            return HpackTables.STATIC_TABLE[index - 1];
+            return new Lookup(HpackTables.STATIC_TABLE[index - 1],
+                    HpackValueSource.STATIC_TABLE);
         }
         int dynamicIndex = index - STATIC_TABLE_LENGTH - 1;
         if (dynamicIndex < 0 || dynamicIndex >= dynamicTable.size()) {
-            if (config.dynamicTableRecoveryPolicy()
-                    == HpackDynamicTableRecoveryPolicy.SKIP_MISSING) {
-                recoveryEvents.add(recovery(recoveryReason, offset, index));
-                return null;
-            }
-            throw error(HpackErrorReason.INVALID_INDEX, offset,
-                    "HPACK table index " + index + " is unavailable");
+            emit(new HpackDiagnostic(reason, offset, index, -1,
+                    "HPACK dynamic table index " + index
+                            + " is unavailable in the observed context"));
+            markPartialPreservingTable(
+                    "Unavailable dynamic index indicates incomplete observed context");
+            return null;
         }
-        return dynamicTable.get(dynamicIndex);
+        return new Lookup(dynamicTable.get(dynamicIndex),
+                HpackValueSource.DYNAMIC_TABLE);
     }
 
     private void add(byte[] name, byte[] value) {
@@ -363,9 +420,10 @@ public final class HpackDecoder {
         }
     }
 
-    private static HpackHeaderField field(byte[] name, byte[] value, boolean sensitive) {
+    private static HpackHeaderField field(byte[] name, byte[] value, boolean sensitive,
+                                          HpackFieldProvenance provenance) {
         return new HpackHeaderField(ByteSequence.wrap(name),
-                ByteSequence.wrap(value), sensitive);
+                ByteSequence.wrap(value), sensitive, provenance);
     }
 
     private static HpackDecodingException error(HpackErrorReason reason, int offset,
@@ -373,14 +431,50 @@ public final class HpackDecoder {
         return new HpackDecodingException(reason, offset, message);
     }
 
-    private static HpackRecoveryEvent recovery(HpackRecoveryReason reason, int offset,
-                                               int index) {
-        String message = reason == HpackRecoveryReason.MISSING_DYNAMIC_TABLE_INDEX
-                ? "Skipped indexed field with unavailable HPACK dynamic table index "
-                        + index
-                : "Skipped literal field with unavailable HPACK dynamic table name index "
-                        + index;
-        return new HpackRecoveryEvent(reason, offset, index, message);
+    private HpackBlockAnalysis incomplete(List<HpackHeaderField> fields,
+                                          int omittedFields) {
+        return new HpackBlockAnalysis(HpackHeaderFields.copyOf(fields),
+                HpackBlockStatus.INCOMPLETE, omittedFields, contextCompleteness);
+    }
+
+    private static boolean isResourceError(HpackErrorReason reason) {
+        return reason == HpackErrorReason.ENCODED_BLOCK_TOO_LARGE
+                || reason == HpackErrorReason.HEADER_LIST_TOO_LARGE;
+    }
+
+    private void loseContext(boolean loseTableLimit, String message) {
+        boolean transition = contextCompleteness != HpackContextCompleteness.PARTIAL
+                || !dynamicTable.isEmpty() || (loseTableLimit && tableLimitKnown);
+        dynamicTable.clear();
+        dynamicTableSize = 0;
+        contextCompleteness = HpackContextCompleteness.PARTIAL;
+        if (loseTableLimit) {
+            tableLimitKnown = false;
+            pendingMinimum = -1;
+        }
+        if (transition) {
+            emit(new HpackDiagnostic(HpackDiagnosticReason.CONTEXT_BECAME_PARTIAL,
+                    -1, -1, -1, message));
+        }
+    }
+
+    private void markPartialPreservingTable(String message) {
+        if (contextCompleteness == HpackContextCompleteness.OBSERVED_COMPLETE) {
+            contextCompleteness = HpackContextCompleteness.PARTIAL;
+            emit(new HpackDiagnostic(HpackDiagnosticReason.CONTEXT_BECAME_PARTIAL,
+                    -1, -1, -1, message));
+        }
+    }
+
+    private void emit(HpackDiagnostic diagnostic) {
+        HpackDiagnostic contextual = diagnostic.streamId() < 0 && diagnosticStreamId >= 0
+                ? diagnostic.withStreamId(diagnosticStreamId) : diagnostic;
+        try {
+            diagnosticSink.accept(contextual);
+        } catch (RuntimeException exception) {
+            invalidateAfterListenerFailure();
+            throw exception;
+        }
     }
 
     private static void validateSnapshotConfiguration(HpackDecoderSnapshot snapshot,
@@ -416,6 +510,9 @@ public final class HpackDecoder {
     private static HpackSnapshotException snapshotError(String message) {
         return new HpackSnapshotException(HpackSnapshotErrorReason.CONFIGURATION_LIMIT,
                 -1, message);
+    }
+
+    private record Lookup(HpackTables.Entry entry, HpackValueSource source) {
     }
 
     private static final class Input {

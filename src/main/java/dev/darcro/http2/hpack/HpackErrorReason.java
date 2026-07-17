@@ -1,7 +1,6 @@
 package dev.darcro.http2.hpack;
 
-public enum HpackErrorReason {
-    DECODER_FAILED,
+enum HpackErrorReason {
     ENCODED_BLOCK_TOO_LARGE,
     HEADER_LIST_TOO_LARGE,
     TRUNCATED_INPUT,

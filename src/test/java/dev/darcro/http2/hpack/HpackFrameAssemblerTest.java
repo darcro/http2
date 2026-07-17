@@ -1,303 +1,211 @@
 package dev.darcro.http2.hpack;
 
-import dev.darcro.http2.frame.ByteSequence;
-import dev.darcro.http2.frame.ContinuationFrame;
-import dev.darcro.http2.frame.DataFrame;
-import dev.darcro.http2.frame.HeadersFrame;
-import dev.darcro.http2.frame.Http2Flags;
-import dev.darcro.http2.frame.Http2Frame;
-import dev.darcro.http2.frame.Http2FrameParser;
-import dev.darcro.http2.frame.PushPromiseFrame;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.darcro.http2.frame.ByteSequence;
+import dev.darcro.http2.frame.ContinuationFrame;
+import dev.darcro.http2.frame.DataFrame;
+import dev.darcro.http2.frame.HeadersFrame;
+import dev.darcro.http2.frame.Http2Flags;
+import dev.darcro.http2.frame.Http2FrameParser;
+import dev.darcro.http2.frame.PushPromiseFrame;
+import java.util.ArrayList;
 import java.util.HexFormat;
-import java.util.Optional;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class HpackFrameAssemblerTest {
     @Test
-    void decodesSingleHeadersFrameWithOriginMetadata() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler();
-        HeadersFrame frame = headers(1, Http2Flags.END_HEADERS | Http2Flags.END_STREAM,
-                "828684");
+    void analyzesSingleHeadersFrameWithMetadata() throws Exception {
+        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart();
+        HpackFrameAnalysis analysis = assembler.accept(headers(1,
+                Http2Flags.END_HEADERS | Http2Flags.END_STREAM, "828684"));
 
-        DecodedHeaderBlock block = assembler.accept(frame).orElseThrow();
+        assertEquals(HpackFrameAnalysisStatus.BLOCK_ANALYZED, analysis.status());
+        DecodedHeaderBlock block = analysis.decodedBlock().orElseThrow();
         assertEquals(HeaderBlockOrigin.HEADERS, block.origin());
         assertEquals(1, block.streamId());
         assertTrue(block.endStream());
-        assertTrue(block.promisedStreamId().isEmpty());
-        assertEquals(3, block.fields().size());
         assertEquals("GET", block.method().orElseThrow());
-        assertEquals("http", block.scheme().orElseThrow());
-        assertEquals("/", block.path().orElseThrow());
+        assertEquals(HpackContextCompleteness.OBSERVED_COMPLETE,
+                block.contextCompleteness());
     }
 
     @Test
-    void acceptsAHeadersFrameProducedByTheExistingWireParser() throws Exception {
-        Http2Frame parsed = new Http2FrameParser().parse(
-                hex("000003010500000001828684"));
-        HpackFrameAssembler assembler = new HpackFrameAssembler();
-
-        DecodedHeaderBlock block = assembler.accept(parsed).orElseThrow();
-        assertEquals(1, block.streamId());
-        assertTrue(block.endStream());
-        assertEquals(":method", block.fields().get(0).nameUtf8());
+    void acceptsFramesProducedByWireParser() throws Exception {
+        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart();
+        HpackFrameAnalysis result = assembler.accept(new Http2FrameParser().parse(
+                hex("000003010500000001828684")));
+        assertEquals("GET", result.decodedBlock().orElseThrow().method().orElseThrow());
     }
 
     @Test
-    void reassemblesContinuationFragmentsWithoutConcatenating() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler();
+    void reassemblesContinuationFragments() {
+        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart();
+        assertEquals(HpackFrameAnalysisStatus.AWAITING_CONTINUATION,
+                assembler.accept(headers(3, 0, "8286")).status());
 
-        assertTrue(assembler.accept(headers(3, 0, "8286")).isEmpty());
-        byte[] finalBytes = hex("84410f7777772e6578616d706c652e636f6d");
-        ContinuationFrame continuation = continuation(3, Http2Flags.END_HEADERS,
-                finalBytes);
-        Optional<DecodedHeaderBlock> completed = assembler.accept(continuation);
+        HpackFrameAnalysis result = assembler.accept(continuation(3,
+                Http2Flags.END_HEADERS,
+                hex("84410f7777772e6578616d706c652e636f6d")));
 
-        finalBytes[0] = 0;
-        DecodedHeaderBlock block = completed.orElseThrow();
-        assertEquals(4, block.fields().size());
-        assertEquals("www.example.com", block.fields().get(3).valueUtf8());
+        assertEquals(4, result.decodedBlock().orElseThrow().fields().size());
     }
 
     @Test
-    void decodesPushPromiseMetadata() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler();
+    void preservesPushPromiseMetadata() {
+        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart();
         ByteSequence fragment = sequence(hex("8286"));
         PushPromiseFrame frame = new PushPromiseFrame(fragment.length(),
                 Http2Flags.END_HEADERS, 1, 2, fragment, 0);
 
-        DecodedHeaderBlock block = assembler.accept(frame).orElseThrow();
+        DecodedHeaderBlock block = assembler.accept(frame).decodedBlock().orElseThrow();
         assertEquals(HeaderBlockOrigin.PUSH_PROMISE, block.origin());
-        assertFalse(block.endStream());
         assertEquals(2, block.promisedStreamId().orElseThrow());
     }
 
     @Test
-    void ignoresUnrelatedFramesWhileIdle() throws Exception {
+    void ignoresNonHeaderFramesWhileIdle() {
+        HpackFrameAnalysis result = new HpackFrameAssembler().accept(
+                new DataFrame(0, 0, 1, sequence(new byte[0]), 0));
+        assertEquals(HpackFrameAnalysisStatus.IGNORED, result.status());
+    }
+
+    @Test
+    void recoversOrphanContinuationAndContinues() {
+        List<HpackDiagnostic> diagnostics = new ArrayList<>();
+        HpackFrameAssembler assembler = new HpackFrameAssembler(
+                HpackDecoderConfig.defaults(), diagnostics::add);
+
+        HpackFrameAnalysis orphan = assembler.accept(continuation(1,
+                Http2Flags.END_HEADERS, hex("82")));
+        HpackFrameAnalysis later = assembler.accept(headers(1,
+                Http2Flags.END_HEADERS, "82"));
+
+        assertEquals(HpackFrameAnalysisStatus.BLOCK_DISCARDED, orphan.status());
+        assertEquals("GET", later.decodedBlock().orElseThrow().method().orElseThrow());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.reason() == HpackDiagnosticReason.UNEXPECTED_CONTINUATION));
+    }
+
+    @Test
+    void wrongStreamContinuationAbandonsCurrentBlock() {
+        List<HpackDiagnostic> diagnostics = new ArrayList<>();
+        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart(
+                HpackDecoderConfig.defaults(), diagnostics::add);
+        assembler.accept(headers(1, 0, "82"));
+
+        HpackFrameAnalysis result = assembler.accept(continuation(3,
+                Http2Flags.END_HEADERS, hex("86")));
+
+        assertEquals(HpackFrameAnalysisStatus.BLOCK_DISCARDED, result.status());
+        assertEquals(HpackContextCompleteness.PARTIAL, result.contextCompleteness());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.reason() == HpackDiagnosticReason.WRONG_STREAM_CONTINUATION));
+    }
+
+    @Test
+    void interleavedHeadersStartsNewBlockAfterDiscardingOld() {
+        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart();
+        assembler.accept(headers(1, 0, "86"));
+
+        HpackFrameAnalysis result = assembler.accept(headers(3,
+                Http2Flags.END_HEADERS, "82"));
+
+        assertEquals(3, result.decodedBlock().orElseThrow().streamId());
+        assertEquals(HpackContextCompleteness.PARTIAL, result.contextCompleteness());
+    }
+
+    @Test
+    void malformedHpackReturnsPartialBlockAndLaterBlocksStillWork() {
+        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart();
+
+        DecodedHeaderBlock malformed = assembler.accept(headers(1,
+                Http2Flags.END_HEADERS, "8280")).decodedBlock().orElseThrow();
+        DecodedHeaderBlock later = assembler.accept(headers(3,
+                Http2Flags.END_HEADERS, "82")).decodedBlock().orElseThrow();
+
+        assertEquals(HpackBlockStatus.INCOMPLETE, malformed.analysisStatus());
+        assertEquals(1, malformed.fields().size());
+        assertEquals("GET", later.method().orElseThrow());
+    }
+
+    @Test
+    void oversizedFragmentedBlockIsDiscardedThroughEndHeaders() {
+        HpackFrameAssembler assembler = new HpackFrameAssembler(
+                new HpackDecoderConfig(4096, 2, 1024));
+
+        assertEquals(HpackFrameAnalysisStatus.AWAITING_CONTINUATION,
+                assembler.accept(headers(1, 0, "82")).status());
+        assertEquals(HpackFrameAnalysisStatus.BLOCK_DISCARDED,
+                assembler.accept(continuation(1, 0, hex("8684"))).status());
+        assertTrue(assembler.snapshot().discarding());
+        assertEquals(HpackFrameAnalysisStatus.BLOCK_DISCARDED,
+                assembler.accept(continuation(1, Http2Flags.END_HEADERS,
+                        new byte[0])).status());
+        assertFalse(assembler.snapshot().discarding());
+
+        assertEquals("GET", assembler.accept(headers(3, Http2Flags.END_HEADERS,
+                "82")).decodedBlock().orElseThrow().method().orElseThrow());
+    }
+
+    @Test
+    void wrongStreamWhileDiscardingEmitsOneDiagnosticAndTracksNewBlock() {
+        List<HpackDiagnostic> diagnostics = new ArrayList<>();
+        HpackFrameAssembler assembler = new HpackFrameAssembler(
+                new HpackDecoderConfig(4096, 1, 1024), diagnostics::add);
+        assembler.accept(headers(1, 0, "8286"));
+        diagnostics.clear();
+
+        HpackFrameAnalysis result = assembler.accept(continuation(3, 0, hex("82")));
+
+        assertEquals(HpackFrameAnalysisStatus.BLOCK_DISCARDED, result.status());
+        assertEquals(1, diagnostics.size());
+        assertEquals(HpackDiagnosticReason.WRONG_STREAM_CONTINUATION,
+                diagnostics.get(0).reason());
+        assertEquals(3, assembler.snapshot().streamId());
+        assertTrue(assembler.snapshot().discarding());
+    }
+
+    @Test
+    void emptyContinuationsAreNotRetained() {
         HpackFrameAssembler assembler = new HpackFrameAssembler();
-        DataFrame data = new DataFrame(0, 0, 1, sequence(new byte[0]), 0);
-        assertTrue(assembler.accept(data).isEmpty());
-        assertFalse(assembler.failed());
+        assembler.accept(headers(1, 0, ""));
+        for (int i = 0; i < 1000; i++) {
+            assembler.accept(continuation(1, 0, new byte[0]));
+        }
+        assertTrue(assembler.snapshot().incompleteBlock().isEmpty());
+        assertEquals(HpackFrameAnalysisStatus.BLOCK_ANALYZED,
+                assembler.accept(continuation(1, Http2Flags.END_HEADERS,
+                        new byte[0])).status());
     }
 
     @Test
-    void rejectsUnexpectedWrongStreamAndInterleavedFrames() throws Exception {
-        HpackFrameAssembler unexpected = new HpackFrameAssembler();
-        HpackFrameSequenceException noOrigin = assertThrows(HpackFrameSequenceException.class,
-                () -> unexpected.accept(continuation(1, Http2Flags.END_HEADERS,
-                        hex("82"))));
-        assertEquals(HpackFrameSequenceReason.UNEXPECTED_CONTINUATION, noOrigin.reason());
-        assertTrue(unexpected.failed());
+    void listenerFailureDoesNotLeaveTrustedContext() {
+        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart(
+                HpackDecoderConfig.defaults(), diagnostic -> {
+                    throw new IllegalStateException("sink failed");
+                });
 
-        HpackFrameAssembler wrongStream = new HpackFrameAssembler();
-        wrongStream.accept(headers(1, 0, "82"));
-        assertEquals(HpackFrameSequenceReason.WRONG_STREAM,
-                assertThrows(HpackFrameSequenceException.class,
-                        () -> wrongStream.accept(continuation(3,
-                                Http2Flags.END_HEADERS, hex("86")))).reason());
-
-        HpackFrameAssembler interleaved = new HpackFrameAssembler();
-        interleaved.accept(headers(1, 0, "82"));
-        DataFrame data = new DataFrame(0, 0, 1, sequence(new byte[0]), 0);
-        assertEquals(HpackFrameSequenceReason.INTERLEAVED_FRAME,
-                assertThrows(HpackFrameSequenceException.class,
-                        () -> interleaved.accept(data)).reason());
+        assertThrows(IllegalStateException.class, () -> assembler.accept(
+                continuation(1, Http2Flags.END_HEADERS, hex("82"))));
+        assertEquals(HpackContextCompleteness.PARTIAL,
+                assembler.contextCompleteness());
     }
 
     @Test
-    void recoversUnexpectedContinuationAndKeepsAssemblerUsable() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler(
-                HpackFrameSequenceRecoveryPolicy.RECOVER);
-
-        assertTrue(assembler.accept(continuation(1, Http2Flags.END_HEADERS,
-                hex("82"))).isEmpty());
-
-        assertFalse(assembler.failed());
-        assertTrue(assembler.recoveredSequenceErrors());
-        assertEquals(1, assembler.recoveryEvents().size());
-        HpackFrameSequenceRecoveryEvent event = assembler.recoveryEvents().get(0);
-        assertEquals(HpackFrameSequenceReason.UNEXPECTED_CONTINUATION, event.reason());
-        assertEquals(1, event.streamId());
-
-        DecodedHeaderBlock later = assembler.accept(
-                headers(1, Http2Flags.END_HEADERS, "82")).orElseThrow();
-        assertEquals("GET", later.method().orElseThrow());
-    }
-
-    @Test
-    void recoversWrongStreamContinuationByAbandoningCurrentBlock() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler(
-                HpackFrameSequenceRecoveryPolicy.RECOVER);
-
-        assertTrue(assembler.accept(headers(1, 0, "82")).isEmpty());
-        assertTrue(assembler.accept(continuation(3, Http2Flags.END_HEADERS,
-                hex("86"))).isEmpty());
-
-        assertFalse(assembler.failed());
-        assertEquals(1, assembler.recoveryEvents().size());
-        assertEquals(HpackFrameSequenceReason.WRONG_STREAM,
-                assembler.recoveryEvents().get(0).reason());
-        assertEquals(3, assembler.recoveryEvents().get(0).streamId());
-
-        DecodedHeaderBlock later = assembler.accept(
-                headers(5, Http2Flags.END_HEADERS, "82")).orElseThrow();
-        assertEquals(5, later.streamId());
-        assertEquals("GET", later.method().orElseThrow());
-    }
-
-    @Test
-    void recoversInterleavedNonHeaderFrameByAbandoningCurrentBlock() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler(
-                HpackFrameSequenceRecoveryPolicy.RECOVER);
-
-        assertTrue(assembler.accept(headers(1, 0, "82")).isEmpty());
-        DataFrame data = new DataFrame(0, 0, 1, sequence(new byte[0]), 0);
-        assertTrue(assembler.accept(data).isEmpty());
-
-        assertFalse(assembler.failed());
-        assertEquals(1, assembler.recoveryEvents().size());
-        assertEquals(HpackFrameSequenceReason.INTERLEAVED_FRAME,
-                assembler.recoveryEvents().get(0).reason());
-        assertEquals(1, assembler.recoveryEvents().get(0).streamId());
-
-        DecodedHeaderBlock later = assembler.accept(
-                headers(1, Http2Flags.END_HEADERS, "82")).orElseThrow();
-        assertEquals("GET", later.method().orElseThrow());
-    }
-
-    @Test
-    void recoversInterleavedHeadersByStartingTheNewBlock() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler(
-                HpackFrameSequenceRecoveryPolicy.RECOVER);
-
-        assertTrue(assembler.accept(headers(1, 0, "86")).isEmpty());
-        DecodedHeaderBlock block = assembler.accept(
-                headers(3, Http2Flags.END_HEADERS, "82")).orElseThrow();
-
-        assertFalse(assembler.failed());
-        assertEquals(1, assembler.recoveryEvents().size());
-        assertEquals(HpackFrameSequenceReason.INTERLEAVED_FRAME,
-                assembler.recoveryEvents().get(0).reason());
-        assertEquals(3, block.streamId());
-        assertEquals("GET", block.method().orElseThrow());
-    }
-
-    @Test
-    void clearsSequenceRecoveryDiagnostics() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler(
-                HpackFrameSequenceRecoveryPolicy.RECOVER);
-        assembler.accept(continuation(1, Http2Flags.END_HEADERS, hex("82")));
-        assertTrue(assembler.recoveredSequenceErrors());
-
-        assembler.clearRecoveryEvents();
-
-        assertFalse(assembler.recoveredSequenceErrors());
-        assertTrue(assembler.recoveryEvents().isEmpty());
-        assertEquals(HpackFrameSequenceRecoveryPolicy.RECOVER,
-                assembler.sequenceRecoveryPolicy());
-    }
-
-    @Test
-    void propagatesDecodeFailureAndPoisonsAssembler() {
-        HpackFrameAssembler assembler = new HpackFrameAssembler();
-        assertThrows(HpackDecodingException.class,
-                () -> assembler.accept(headers(1, Http2Flags.END_HEADERS, "80")));
-        assertTrue(assembler.failed());
-        assertEquals(HpackFrameSequenceReason.ASSEMBLER_FAILED,
-                assertThrows(HpackFrameSequenceException.class,
-                        () -> assembler.accept(headers(1, Http2Flags.END_HEADERS,
-                                "82"))).reason());
-    }
-
-    @Test
-    void recoveryPolicyDoesNotRecoverHpackDecodeFailures() {
-        HpackFrameAssembler assembler = new HpackFrameAssembler(
-                HpackFrameSequenceRecoveryPolicy.RECOVER);
-
-        assertThrows(HpackDecodingException.class,
-                () -> assembler.accept(headers(1, Http2Flags.END_HEADERS, "80")));
-
-        assertTrue(assembler.failed());
-        assertEquals(HpackFrameSequenceReason.ASSEMBLER_FAILED,
-                assertThrows(HpackFrameSequenceException.class,
-                        () -> assembler.accept(headers(1, Http2Flags.END_HEADERS,
-                                "82"))).reason());
-    }
-
-    @Test
-    void recoversMissingDynamicIndexesAndKeepsAssemblerUsable() throws Exception {
-        HpackFrameAssembler assembler = new HpackFrameAssembler();
-
-        DecodedHeaderBlock recovered = assembler.accept(
-                headers(1, Http2Flags.END_HEADERS, "be82")).orElseThrow();
-
-        assertTrue(recovered.recovered());
-        assertEquals(1, recovered.fields().size());
-        assertEquals("GET", recovered.method().orElseThrow());
-        assertEquals(1, recovered.recoveryEvents().size());
-        HpackRecoveryEvent event = recovered.recoveryEvents().get(0);
-        assertEquals(HpackRecoveryReason.MISSING_DYNAMIC_TABLE_INDEX, event.reason());
-        assertEquals(62, event.index());
-        assertFalse(assembler.failed());
-
-        DecodedHeaderBlock later = assembler.accept(
-                headers(3, Http2Flags.END_HEADERS, "82")).orElseThrow();
-        assertFalse(later.recovered());
-        assertEquals("GET", later.method().orElseThrow());
-    }
-
-    @Test
-    void rejectsAnOversizedBlockBeforeMoreFragmentsAreRetained() {
-        HpackDecoderConfig config = new HpackDecoderConfig(4096, 2, 1024);
-        HpackFrameAssembler assembler = new HpackFrameAssembler(config);
-
-        HpackDecodingException error = assertThrows(HpackDecodingException.class,
-                () -> assembler.accept(headers(1, 0, "828684")));
-        assertEquals(HpackErrorReason.ENCODED_BLOCK_TOO_LARGE, error.reason());
-        assertEquals(1, error.streamId().orElseThrow());
-        assertTrue(assembler.failed());
-    }
-
-    @Test
-    void exposesConfigurationAndSafeDynamicTableControls() throws Exception {
-        HpackDecoderConfig config = new HpackDecoderConfig(8_192, 1_024, 2_048);
-        HpackFrameAssembler assembler = new HpackFrameAssembler(config);
-
-        assertEquals(HpackDecoderConfig.defaults(), new HpackFrameAssembler().config());
-        assertEquals(config, assembler.config());
-        assertEquals(0, assembler.dynamicTableSize());
-        assertEquals(8_192, assembler.maxDynamicTableSize());
-        assertThrows(IllegalArgumentException.class,
-                () -> assembler.updateMaxDynamicTableSize(8_193));
-
-        assembler.updateMaxDynamicTableSize(0);
-        assertEquals(0, assembler.maxDynamicTableSize());
-        DecodedHeaderBlock block = assembler.accept(
-                headers(1, Http2Flags.END_HEADERS, "20")).orElseThrow();
-        assertTrue(block.fields().isEmpty());
-        assertEquals(0, assembler.dynamicTableSize());
-
-        assertThrows(HpackFrameSequenceException.class,
-                () -> assembler.accept(continuation(1, Http2Flags.END_HEADERS,
-                        hex("82"))));
-        assertThrows(IllegalStateException.class,
-                () -> assembler.updateMaxDynamicTableSize(0));
-    }
-
-    @Test
-    void doesNotExposeItsOwnedDecoder() {
+    void assemblerDoesNotExposeOwnedDecoder() {
         assertThrows(NoSuchMethodException.class,
                 () -> HpackFrameAssembler.class.getConstructor(HpackDecoder.class));
         assertThrows(NoSuchMethodException.class,
                 () -> HpackFrameAssembler.class.getMethod("decoder"));
     }
 
-    private static HeadersFrame headers(int streamId, int flags, String hex) {
-        ByteSequence fragment = sequence(hex(hex));
+    private static HeadersFrame headers(int streamId, int flags, String value) {
+        ByteSequence fragment = sequence(hex(value));
         return new HeadersFrame(fragment.length(), flags, streamId, fragment, null, 0);
     }
 

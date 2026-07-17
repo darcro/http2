@@ -1,21 +1,17 @@
 # Simple Usage Guide
 
-This guide covers the common operations: parsing one HTTP/2 frame, reading its
-payload, validating the client connection preface, and decoding headers.
+This library analyzes HTTP/2 application-layer data. TCP reassembly, TLS
+decryption, connection identification, and separation of the two connection
+directions belong to the caller. Supply one exact candidate frame at a time.
 
 ## Add the library
-
-Release artifacts are published to GitHub Packages. Add the package repository
-and dependency:
 
 ```xml
 <repository>
     <id>github</id>
     <url>https://maven.pkg.github.com/darcro/http2</url>
 </repository>
-```
 
-```xml
 <dependency>
     <groupId>dev.darcro.http2</groupId>
     <artifactId>http2-parser</artifactId>
@@ -23,164 +19,124 @@ and dependency:
 </dependency>
 ```
 
-GitHub Packages may require Maven credentials depending on package visibility.
+For a checkout, run `mvn clean install`. The library requires Java 17 and has
+no runtime dependencies.
 
-For local development from a checkout, install the current snapshot into your
-local Maven repository:
+## Observe a frame
 
-```shell
-mvn clean install
-```
-
-The library requires Java 17 and has no runtime dependencies.
-
-## Parse one frame
-
-`Http2FrameParser` accepts exactly one complete frame: the 9-byte HTTP/2 frame
-header followed by the number of payload bytes declared in that header. The
-default parser accepts payloads up to HTTP/2's protocol maximum so captures can
-start after `SETTINGS_MAX_FRAME_SIZE` was negotiated.
+`Http2FrameParser.observe` retains both evidence and interpretation. The input
+must contain the nine-byte frame header and exactly the declared payload.
 
 ```java
-import dev.darcro.http2.frame.DataFrame;
-import dev.darcro.http2.frame.Http2Frame;
-import dev.darcro.http2.frame.Http2FrameParser;
-import dev.darcro.http2.frame.ParseErrorException;
-
 Http2FrameParser parser = new Http2FrameParser();
+Http2FrameObservation observation = parser.observe(candidateBytes);
 
-try {
-    Http2Frame frame = parser.parse(wireBytes);
+System.out.println("captured bytes=" + observation.rawBytes().length());
+observation.header().ifPresent(header ->
+        System.out.println("stream=" + header.streamId()));
+observation.diagnostics().forEach(System.out::println);
 
+observation.frame().ifPresent(frame -> {
     if (frame instanceof DataFrame data) {
-        System.out.println("stream=" + data.streamId());
-        System.out.println("endStream=" + data.endStream());
         byte[] body = data.data().toByteArray();
     }
-} catch (ParseErrorException error) {
-    System.err.println("Invalid frame at byte " + error.offset()
-            + ": " + error.getMessage());
-}
+});
 ```
 
-The returned type identifies the frame payload:
+The optional header can be present even when the payload cannot be converted
+to a typed frame. Unknown extension types become `UnknownFrame`. Standard wire
+types become `DataFrame`, `HeadersFrame`, `PriorityFrame`, `RstStreamFrame`,
+`SettingsFrame`, `PushPromiseFrame`, `PingFrame`, `GoAwayFrame`,
+`WindowUpdateFrame`, or `ContinuationFrame`.
 
-| Wire type | Java type |
-| --- | --- |
-| DATA | `DataFrame` |
-| HEADERS | `HeadersFrame` |
-| PRIORITY | `PriorityFrame` |
-| RST_STREAM | `RstStreamFrame` |
-| SETTINGS | `SettingsFrame` |
-| PUSH_PROMISE | `PushPromiseFrame` |
-| PING | `PingFrame` |
-| GOAWAY | `GoAwayFrame` |
-| WINDOW_UPDATE | `WindowUpdateFrame` |
-| CONTINUATION | `ContinuationFrame` |
-| Extension or unknown type | `UnknownFrame` |
-
-Payloads are exposed as read-only `ByteSequence` views. Parsing does not copy
-payload bytes, so do not modify the input array while the parsed frame is in
-use. Call `toByteArray()` when independently owned bytes are needed.
+`observe` is zero-copy: its byte sequences refer to the supplied array. Keep
+that array unchanged for as long as the observation or frame is used. Use
+`observeOwned` when the library should make one defensive copy. Use `parse`
+when a malformed candidate should instead throw `ParseErrorException`.
 
 ## Validate the client preface
 
-The HTTP/2 client connection preface is not a frame. Validate its fixed 24-byte
-value separately:
+The fixed 24-byte client connection preface is not an HTTP/2 frame.
 
 ```java
-import dev.darcro.http2.frame.Http2ConnectionPreface;
-
 boolean valid = Http2ConnectionPreface.isValid(prefaceBytes);
+boolean rangeValid = Http2ConnectionPreface.isValid(
+        buffer, offset, Http2ConnectionPreface.LENGTH);
 ```
 
-A range overload avoids copying when the preface is inside a larger buffer:
+## Assemble and decode headers
+
+Create one `HpackFrameAssembler` per observed connection direction. The default
+constructor assumes that capture may have begun mid-connection, so its HPACK
+context is `PARTIAL`. No input-gap notification is required or available.
 
 ```java
-boolean valid = Http2ConnectionPreface.isValid(buffer, offset,
-        Http2ConnectionPreface.LENGTH);
-```
-
-The input must begin at the HTTP/2 application layer. Ethernet, IP, and TCP
-headers are outside this library's scope.
-
-## Decode headers
-
-`HpackFrameAssembler` owns the stateful HPACK decoder and handles complete or
-fragmented field blocks. Use one assembler for each inbound connection
-direction and feed every inbound frame to it in wire order. Passing non-header
-frames is required so the assembler can detect illegal interleaving between a
-HEADERS or PUSH_PROMISE and its CONTINUATION frames.
-
-```java
-import dev.darcro.http2.hpack.DecodedHeaderBlock;
-import dev.darcro.http2.hpack.HpackFrameAssembler;
-import dev.darcro.http2.hpack.HpackFrameSequenceRecoveryPolicy;
-import java.util.Optional;
-
-HpackFrameAssembler assembler = new HpackFrameAssembler();
-
-Http2Frame frame = parser.parse(wireBytes);
-Optional<DecodedHeaderBlock> completed = assembler.accept(frame);
-
-if (completed.isPresent()) {
-    DecodedHeaderBlock block = completed.get();
-    System.out.println("headers for stream " + block.streamId());
-    if (block.recovered()) {
-        System.out.println("partial header block: " + block.recoveryEvents());
-    }
-    block.method().ifPresent(method -> System.out.println("method=" + method));
-    block.status().ifPresent(status -> System.out.println("status=" + status));
-
-    block.headerFields().first("content-type").ifPresent(field ->
-            System.out.println("content-type=" + field.valueUtf8()));
-}
-```
-
-The default assembler is strict about HEADERS, PUSH_PROMISE, and CONTINUATION
-ordering. For offline capture analysis where the first observed frame may be
-mid-block or frames may be missing, create the assembler with sequence
-recovery:
-
-```java
+List<HpackDiagnostic> diagnostics = new ArrayList<>();
 HpackFrameAssembler assembler = new HpackFrameAssembler(
-        HpackFrameSequenceRecoveryPolicy.RECOVER);
+        HpackDecoderConfig.defaults(), diagnostics::add);
 
-assembler.accept(frame);
-if (assembler.recoveredSequenceErrors()) {
-    assembler.recoveryEvents().forEach(System.out::println);
-    assembler.clearRecoveryEvents();
-}
+Http2FrameObservation observation = parser.observe(candidateBytes);
+observation.frame().ifPresent(frame -> {
+    HpackFrameAnalysis analysis = assembler.accept(frame);
+    System.out.println(analysis.status());
+
+    analysis.decodedBlock().ifPresent(block -> {
+        System.out.println("stream=" + block.streamId());
+        System.out.println("quality=" + block.analysisStatus());
+        System.out.println("context=" + block.contextCompleteness());
+        System.out.println("omitted=" + block.omittedFieldCount());
+
+        block.method().ifPresent(value -> System.out.println("method=" + value));
+        block.status().ifPresent(value -> System.out.println("status=" + value));
+        block.headerFields().first("content-type").ifPresent(field ->
+                System.out.println("content-type=" + field.valueUtf8()));
+    });
+});
 ```
 
-Sequence recovery discards only incomplete, not-yet-decoded field-block
-fragments. Malformed HPACK blocks still raise checked exceptions because they
-can leave decoder state uncertain.
+Feed all observed frames in a direction to the assembler in observation order.
+Non-header frames let it identify and recover from interrupted CONTINUATION
+sequences. `HpackFrameAnalysisStatus` distinguishes ignored frames, blocks in
+progress, decoded blocks, and discarded blocks. Recovery is unconditional and
+the assembler never enters a terminal error state.
 
-If you persist assembler state between executions, use the restore overload
-that accepts `HpackFrameSequenceRecoveryPolicy.RECOVER` to keep this behavior
-after loading the snapshot.
+If capture is known to begin at the connection start, use
+`HpackFrameAssembler.atConnectionStart()`. This reports
+`OBSERVED_COMPLETE` until evidence proves otherwise. It means complete relative
+to all bytes supplied by the caller, not proof that the capture has no silent
+loss.
 
-The request pseudo-fields `method()`, `scheme()`, `authority()`, and `path()`,
-and the response pseudo-field `status()`, are cached when a block is created.
-For any other name, `headerFields().first(name)`, `all(name)`, and
-`contains(name)` perform ASCII case-insensitive lookup. `all(name)` preserves
-duplicate values in wire order.
+## Interpret provenance
 
-Do not create a separate decoder for frames handled by an assembler. Direct
-`HpackDecoder` use is available for lower-level integrations that already own
-complete HPACK field blocks. Those callers can create the same lookup view with
-`HpackHeaderFields.copyOf(decoder.decode(headerBlock))`.
+Every `HpackHeaderField` independently records how its name and value were
+obtained:
 
-When captured traffic starts in the middle of an existing HTTP/2 connection,
-the local HPACK dynamic table can be missing entries referenced by later
-frames. By default the decoder skips only those unavailable dynamic-table
-references, reports them through `recoveryEvents()`, and keeps processing later
-fields and frames. Default HPACK resource limits are also capture-oriented, so
-missed SETTINGS values are less likely to stop analysis. Other malformed HPACK
-data still raises a checked exception.
+```java
+HpackFieldProvenance provenance = field.provenance();
+System.out.println(provenance.nameSource());
+System.out.println(provenance.valueSource());
+provenance.optionalTableIndex().ifPresent(index ->
+        System.out.println("HPACK index=" + index));
+```
 
-Both parsing and HPACK APIs use checked exceptions because their inputs are
-untrusted wire data. See the [advanced guide](advanced.md) for configuration,
-error categories, SETTINGS handling, failed-state behavior, and resuming an
-offline capture from persisted HPACK state.
+Sources are `LITERAL`, `STATIC_TABLE`, or `DYNAMIC_TABLE`. Always retain this
+provenance in analysis output: a field resolved from the dynamic table depends
+on earlier observations even when no missing data was detectable. Header name
+lookup is ASCII case-insensitive; `first`, `all`, and `contains` avoid callers
+having to repeatedly convert and scan names.
+
+## Diagnostics and best-effort output
+
+Malformed HPACK input, missing dynamic indexes, uncertain context, and assembly
+sequence problems are delivered to the configured `HpackDiagnosticSink`.
+Results still contain safely decoded fields, an `INCOMPLETE` status, and the
+number of omitted fields where known. A missing indexed name for an incremental
+literal invalidates local dynamic-table reconstruction to prevent shifted
+indexes from producing false mappings; later observed inserts rebuild context.
+
+Direct `HpackDecoder.analyze` is available for integrations that already have
+a complete HPACK field block. Normal frame processing should use the assembler,
+which owns its decoder and its cross-frame state.
+
+See the [advanced guide](advanced.md) for resource limits, SETTINGS, snapshots,
+and detailed recovery behavior.

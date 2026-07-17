@@ -9,6 +9,7 @@ import java.util.OptionalInt;
 public final class HpackFrameAssemblerSnapshot {
     private final HpackDecoderSnapshot decoderSnapshot;
     private final boolean active;
+    private final boolean discarding;
     private final HeaderBlockOrigin origin;
     private final int streamId;
     private final boolean endStream;
@@ -17,11 +18,13 @@ public final class HpackFrameAssemblerSnapshot {
     private final ByteSequence incompleteBlock;
 
     HpackFrameAssemblerSnapshot(HpackDecoderSnapshot decoderSnapshot, boolean active,
+                                boolean discarding,
                                 HeaderBlockOrigin origin, int streamId,
                                 boolean endStream, int promisedStreamId,
                                 byte[] incompleteBlock) {
         this.decoderSnapshot = Objects.requireNonNull(decoderSnapshot, "decoderSnapshot");
         this.active = active;
+        this.discarding = discarding;
         this.origin = origin;
         this.streamId = streamId;
         this.endStream = endStream;
@@ -36,6 +39,10 @@ public final class HpackFrameAssemblerSnapshot {
 
     public boolean active() {
         return active;
+    }
+
+    public boolean discarding() {
+        return discarding;
     }
 
     public Optional<HeaderBlockOrigin> origin() {

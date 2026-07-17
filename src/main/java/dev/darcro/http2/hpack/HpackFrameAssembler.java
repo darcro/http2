@@ -12,92 +12,73 @@ import java.util.Optional;
 import java.util.OptionalInt;
 
 /**
- * Reassembles HTTP/2 field-block fragments and decodes them with an HPACK
- * decoder. Feed every inbound frame to detect illegal interleaving. This class
- * is not thread-safe.
+ * Passive reassembler and analyzer for one observed HTTP/2 traffic direction.
+ * This class is not thread-safe and never enters a terminal failed state.
  */
 public final class HpackFrameAssembler {
     private final HpackDecoder decoder;
-    private final HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy;
+    private final HpackDiagnosticSink diagnosticSink;
     private final List<ByteSequence> fragments = new ArrayList<>();
-    private final List<HpackFrameSequenceRecoveryEvent> sequenceRecoveryEvents =
-            new ArrayList<>();
     private HeaderBlockOrigin origin;
     private int streamId;
     private boolean endStream;
     private int promisedStreamId;
     private long encodedLength;
     private boolean active;
-    private boolean failed;
+    private boolean discarding;
 
-    /** Creates an assembler with the default HPACK resource limits. */
     public HpackFrameAssembler() {
-        this(new HpackDecoder(), HpackFrameSequenceRecoveryPolicy.FAIL_FAST);
+        this(HpackDecoderConfig.defaults(), HpackDiagnosticSink.noop());
     }
 
-    /** Creates an assembler with the supplied HPACK resource limits. */
     public HpackFrameAssembler(HpackDecoderConfig config) {
-        this(new HpackDecoder(Objects.requireNonNull(config, "config")),
-                HpackFrameSequenceRecoveryPolicy.FAIL_FAST);
+        this(config, HpackDiagnosticSink.noop());
     }
 
-    /**
-     * Creates an assembler with the default HPACK resource limits and supplied
-     * sequence recovery policy.
-     */
-    public HpackFrameAssembler(HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy) {
-        this(new HpackDecoder(), sequenceRecoveryPolicy);
-    }
-
-    /**
-     * Creates an assembler with the supplied HPACK resource limits and sequence
-     * recovery policy.
-     */
     public HpackFrameAssembler(HpackDecoderConfig config,
-                               HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy) {
-        this(new HpackDecoder(Objects.requireNonNull(config, "config")),
-                sequenceRecoveryPolicy);
+                               HpackDiagnosticSink diagnosticSink) {
+        this(new HpackDecoder(config, diagnosticSink), diagnosticSink);
     }
 
     private HpackFrameAssembler(HpackDecoder decoder,
-                                HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy) {
+                                HpackDiagnosticSink diagnosticSink) {
         this.decoder = Objects.requireNonNull(decoder, "decoder");
-        this.sequenceRecoveryPolicy = Objects.requireNonNull(sequenceRecoveryPolicy,
-                "sequenceRecoveryPolicy");
+        this.diagnosticSink = Objects.requireNonNull(diagnosticSink, "diagnosticSink");
     }
 
-    /** Restores an assembler and its decoder under caller-supplied limits. */
+    public static HpackFrameAssembler atConnectionStart() {
+        return atConnectionStart(HpackDecoderConfig.defaults(),
+                HpackDiagnosticSink.noop());
+    }
+
+    public static HpackFrameAssembler atConnectionStart(HpackDecoderConfig config,
+                                                         HpackDiagnosticSink sink) {
+        return new HpackFrameAssembler(HpackDecoder.atConnectionStart(config, sink), sink);
+    }
+
     public static HpackFrameAssembler restore(HpackFrameAssemblerSnapshot snapshot,
                                               HpackDecoderConfig config)
             throws HpackSnapshotException {
-        return restore(snapshot, config, HpackFrameSequenceRecoveryPolicy.FAIL_FAST);
+        return restore(snapshot, config, HpackDiagnosticSink.noop());
     }
 
-    /**
-     * Restores an assembler and its decoder under caller-supplied limits and
-     * sequence recovery policy.
-     */
     public static HpackFrameAssembler restore(HpackFrameAssemblerSnapshot snapshot,
                                               HpackDecoderConfig config,
-                                              HpackFrameSequenceRecoveryPolicy
-                                                      sequenceRecoveryPolicy)
+                                              HpackDiagnosticSink sink)
             throws HpackSnapshotException {
         Objects.requireNonNull(snapshot, "snapshot");
         Objects.requireNonNull(config, "config");
-        Objects.requireNonNull(sequenceRecoveryPolicy, "sequenceRecoveryPolicy");
-        HpackDecoder decoder = HpackDecoder.restore(snapshot.decoderSnapshot(), config);
+        Objects.requireNonNull(sink, "sink");
+        HpackDecoder decoder = HpackDecoder.restore(snapshot.decoderSnapshot(), config,
+                sink);
         if (snapshot.incompleteBlock().length() > config.maxEncodedHeaderBlockSize()) {
             throw new HpackSnapshotException(HpackSnapshotErrorReason.CONFIGURATION_LIMIT,
                     -1, "Incomplete field block exceeds local configuration");
         }
 
-        HpackFrameAssembler assembler = new HpackFrameAssembler(decoder,
-                sequenceRecoveryPolicy);
+        HpackFrameAssembler assembler = new HpackFrameAssembler(decoder, sink);
         if (snapshot.active()) {
             HeaderBlockOrigin restoredOrigin = snapshot.origin().orElse(null);
-            if (restoredOrigin == null) {
-                throw invalidAssemblerSnapshot("Active snapshot has no origin");
-            }
             int restoredPromisedStream = snapshot.promisedStreamId().orElse(0);
             validateRestoredAssembler(snapshot, restoredOrigin, restoredPromisedStream);
             assembler.origin = restoredOrigin;
@@ -105,8 +86,18 @@ public final class HpackFrameAssembler {
             assembler.endStream = snapshot.endStream();
             assembler.promisedStreamId = restoredPromisedStream;
             assembler.encodedLength = snapshot.incompleteBlock().length();
-            assembler.fragments.add(ByteSequence.wrap(snapshot.incompleteBlockBytes()));
+            if (!snapshot.incompleteBlock().isEmpty()) {
+                assembler.fragments.add(ByteSequence.wrap(snapshot.incompleteBlockBytes()));
+            }
             assembler.active = true;
+        } else if (snapshot.discarding()) {
+            if (snapshot.streamId() <= 0 || snapshot.origin().isPresent()
+                    || snapshot.endStream() || snapshot.promisedStreamId().isPresent()
+                    || !snapshot.incompleteBlock().isEmpty()) {
+                throw invalidAssemblerSnapshot("Invalid discarding assembler state");
+            }
+            assembler.streamId = snapshot.streamId();
+            assembler.discarding = true;
         } else if (snapshot.origin().isPresent() || snapshot.streamId() != 0
                 || snapshot.endStream() || snapshot.promisedStreamId().isPresent()
                 || !snapshot.incompleteBlock().isEmpty()) {
@@ -115,61 +106,27 @@ public final class HpackFrameAssembler {
         return assembler;
     }
 
-    /** Returns the resource limits applied to the owned decoder. */
     public HpackDecoderConfig config() {
         return decoder.config();
     }
 
-    /** Returns the bytes currently occupied by dynamic-table entries. */
+    public HpackContextCompleteness contextCompleteness() {
+        return decoder.contextCompleteness();
+    }
+
     public int dynamicTableSize() {
         return decoder.dynamicTableSize();
     }
 
-    /** Returns the latest applied protocol maximum for the dynamic table. */
     public int maxDynamicTableSize() {
         return decoder.maxDynamicTableSize();
     }
 
-    /**
-     * Applies a SETTINGS_HEADER_TABLE_SIZE limit after connection code has
-     * determined that the setting takes effect.
-     */
     public void updateMaxDynamicTableSize(int maximumSize) {
-        if (failed) {
-            throw new IllegalStateException("HPACK frame assembler is in a failed state");
-        }
         decoder.updateMaxDynamicTableSize(maximumSize);
     }
 
-    public boolean failed() {
-        return failed;
-    }
-
-    /** Returns the policy used for invalid field-block frame sequencing. */
-    public HpackFrameSequenceRecoveryPolicy sequenceRecoveryPolicy() {
-        return sequenceRecoveryPolicy;
-    }
-
-    /** Returns immutable diagnostics for recovered frame sequence errors. */
-    public List<HpackFrameSequenceRecoveryEvent> recoveryEvents() {
-        return List.copyOf(sequenceRecoveryEvents);
-    }
-
-    /** Returns true when any frame sequence errors have been recovered. */
-    public boolean recoveredSequenceErrors() {
-        return !sequenceRecoveryEvents.isEmpty();
-    }
-
-    /** Clears recovered frame sequence diagnostics without changing decoder state. */
-    public void clearRecoveryEvents() {
-        sequenceRecoveryEvents.clear();
-    }
-
-    /** Captures the decoder and any field block held between frame inputs. */
     public HpackFrameAssemblerSnapshot snapshot() {
-        if (failed || decoder.failed()) {
-            throw new IllegalStateException("Cannot snapshot a failed HPACK assembler");
-        }
         if (encodedLength > Integer.MAX_VALUE) {
             throw new IllegalStateException("Incomplete field block is too large to snapshot");
         }
@@ -179,132 +136,157 @@ public final class HpackFrameAssembler {
             fragment.copyTo(incomplete, offset);
             offset += fragment.length();
         }
-        return new HpackFrameAssemblerSnapshot(decoder.snapshot(), active, origin,
-                streamId, endStream, promisedStreamId, incomplete);
+        return new HpackFrameAssemblerSnapshot(decoder.snapshot(), active, discarding,
+                origin, streamId, endStream, promisedStreamId, incomplete);
     }
 
-    public Optional<DecodedHeaderBlock> accept(Http2Frame frame)
-            throws HpackDecodingException, HpackFrameSequenceException {
+    public HpackFrameAnalysis accept(Http2Frame frame) {
         Objects.requireNonNull(frame, "frame");
-        if (failed) {
-            throw sequenceError(HpackFrameSequenceReason.ASSEMBLER_FAILED,
-                    frame.streamId(), "HPACK frame assembler is in a failed state");
+        if (discarding) {
+            return acceptDiscarding(frame);
         }
-
         if (active) {
             return acceptActive(frame);
         }
         return acceptIdle(frame);
     }
 
-    private Optional<DecodedHeaderBlock> acceptActive(Http2Frame frame)
-            throws HpackDecodingException, HpackFrameSequenceException {
-        if (!(frame instanceof ContinuationFrame continuation)) {
-            if (recoveringSequenceErrors()) {
-                recoverSequenceError(HpackFrameSequenceReason.INTERLEAVED_FRAME,
-                        frame.streamId(),
-                        "A field block cannot be interleaved with another frame");
+    private HpackFrameAnalysis acceptDiscarding(Http2Frame frame) {
+        if (frame instanceof ContinuationFrame continuation
+                && continuation.streamId() == streamId) {
+            if (continuation.endHeaders()) {
                 clearBlock();
-                return acceptIdle(frame);
             }
-            fail();
-            throw sequenceError(HpackFrameSequenceReason.INTERLEAVED_FRAME,
-                    frame.streamId(),
-                    "A field block cannot be interleaved with another frame");
+            return result(HpackFrameAnalysisStatus.BLOCK_DISCARDED, null);
         }
-        if (continuation.streamId() != streamId) {
-            if (recoveringSequenceErrors()) {
-                recoverSequenceError(HpackFrameSequenceReason.WRONG_STREAM,
-                        continuation.streamId(),
-                        "CONTINUATION frame belongs to a different stream");
-                clearBlock();
-                return Optional.empty();
-            }
-            fail();
-            throw sequenceError(HpackFrameSequenceReason.WRONG_STREAM,
+
+        if (frame instanceof ContinuationFrame continuation) {
+            emit(HpackDiagnosticReason.WRONG_STREAM_CONTINUATION,
                     continuation.streamId(),
-                    "CONTINUATION frame belongs to a different stream");
+                    "CONTINUATION belongs to a different discarded field block");
+            clearBlock();
+            if (!continuation.endHeaders()) {
+                discarding = true;
+                streamId = continuation.streamId();
+            }
+            return result(HpackFrameAnalysisStatus.BLOCK_DISCARDED, null);
         }
-        append(continuation.headerBlockFragment());
-        if (continuation.endHeaders()) {
-            return Optional.of(complete());
-        }
-        return Optional.empty();
+
+        emit(HpackDiagnosticReason.INTERLEAVED_FRAME, frame.streamId(),
+                "Frame interrupted a discarded field block");
+        clearBlock();
+        return acceptIdle(frame);
     }
 
-    private Optional<DecodedHeaderBlock> acceptIdle(Http2Frame frame)
-            throws HpackDecodingException, HpackFrameSequenceException {
-        if (frame instanceof ContinuationFrame) {
-            if (recoveringSequenceErrors()) {
-                recoverSequenceError(HpackFrameSequenceReason.UNEXPECTED_CONTINUATION,
-                        frame.streamId(), "CONTINUATION has no preceding field block");
-                return Optional.empty();
+    private HpackFrameAnalysis acceptActive(Http2Frame frame) {
+        if (!(frame instanceof ContinuationFrame continuation)) {
+            emit(HpackDiagnosticReason.INTERLEAVED_FRAME, frame.streamId(),
+                    "A field block was interrupted by another frame");
+            decoder.discardObservedContext("Incomplete field block was abandoned");
+            clearBlock();
+            if (frame instanceof HeadersFrame || frame instanceof PushPromiseFrame) {
+                return acceptIdle(frame);
             }
-            fail();
-            throw sequenceError(HpackFrameSequenceReason.UNEXPECTED_CONTINUATION,
-                    frame.streamId(), "CONTINUATION has no preceding field block");
+            return result(HpackFrameAnalysisStatus.BLOCK_DISCARDED, null);
+        }
+        if (continuation.streamId() != streamId) {
+            emit(HpackDiagnosticReason.WRONG_STREAM_CONTINUATION,
+                    continuation.streamId(),
+                    "CONTINUATION belongs to a different stream");
+            decoder.discardObservedContext("Incomplete field block was abandoned");
+            clearBlock();
+            if (!continuation.endHeaders()) {
+                discarding = true;
+                streamId = continuation.streamId();
+            }
+            return result(HpackFrameAnalysisStatus.BLOCK_DISCARDED, null);
+        }
+        if (!append(continuation.headerBlockFragment())) {
+            return discardOversized(continuation.streamId(), continuation.endHeaders());
+        }
+        return continuation.endHeaders()
+                ? complete() : result(HpackFrameAnalysisStatus.AWAITING_CONTINUATION, null);
+    }
+
+    private HpackFrameAnalysis acceptIdle(Http2Frame frame) {
+        if (frame instanceof ContinuationFrame continuation) {
+            emit(HpackDiagnosticReason.UNEXPECTED_CONTINUATION,
+                    continuation.streamId(), "CONTINUATION has no observed field-block start");
+            decoder.discardObservedContext("Unobserved field-block bytes were discarded");
+            if (!continuation.endHeaders()) {
+                discarding = true;
+                streamId = continuation.streamId();
+            }
+            return result(HpackFrameAnalysisStatus.BLOCK_DISCARDED, null);
         }
         if (frame instanceof HeadersFrame headers) {
-            begin(HeaderBlockOrigin.HEADERS, headers.streamId(), headers.endStream(), 0,
-                    headers.headerBlockFragment());
-            return headers.endHeaders() ? Optional.of(complete()) : Optional.empty();
+            begin(HeaderBlockOrigin.HEADERS, headers.streamId(), headers.endStream(), 0);
+            if (!append(headers.headerBlockFragment())) {
+                return discardOversized(headers.streamId(), headers.endHeaders());
+            }
+            return headers.endHeaders()
+                    ? complete() : result(HpackFrameAnalysisStatus.AWAITING_CONTINUATION, null);
         }
         if (frame instanceof PushPromiseFrame pushPromise) {
             begin(HeaderBlockOrigin.PUSH_PROMISE, pushPromise.streamId(), false,
-                    pushPromise.promisedStreamId(), pushPromise.headerBlockFragment());
-            return pushPromise.endHeaders() ? Optional.of(complete()) : Optional.empty();
-        }
-        return Optional.empty();
-    }
-
-    private boolean recoveringSequenceErrors() {
-        return sequenceRecoveryPolicy == HpackFrameSequenceRecoveryPolicy.RECOVER;
-    }
-
-    private void recoverSequenceError(HpackFrameSequenceReason reason, int streamId,
-                                      String message) {
-        sequenceRecoveryEvents.add(new HpackFrameSequenceRecoveryEvent(reason, streamId,
-                message));
-    }
-
-    private void begin(HeaderBlockOrigin origin, int streamId, boolean endStream,
-                       int promisedStreamId, ByteSequence fragment)
-            throws HpackDecodingException {
-        this.origin = origin;
-        this.streamId = streamId;
-        this.endStream = endStream;
-        this.promisedStreamId = promisedStreamId;
-        this.active = true;
-        append(fragment);
-    }
-
-    private void append(ByteSequence fragment) throws HpackDecodingException {
-        fragments.add(fragment);
-        encodedLength += fragment.length();
-        if (encodedLength > decoder.config().maxEncodedHeaderBlockSize()) {
-            try {
-                decoder.decodeFragments(fragments, encodedLength);
-            } catch (HpackDecodingException exception) {
-                int failedStreamId = streamId;
-                fail();
-                throw exception.withStreamId(failedStreamId);
+                    pushPromise.promisedStreamId());
+            if (!append(pushPromise.headerBlockFragment())) {
+                return discardOversized(pushPromise.streamId(),
+                        pushPromise.endHeaders());
             }
+            return pushPromise.endHeaders()
+                    ? complete() : result(HpackFrameAnalysisStatus.AWAITING_CONTINUATION, null);
         }
+        return result(HpackFrameAnalysisStatus.IGNORED, null);
     }
 
-    private DecodedHeaderBlock complete() throws HpackDecodingException {
+    private void begin(HeaderBlockOrigin value, int valueStreamId,
+                       boolean valueEndStream, int valuePromisedStreamId) {
+        origin = value;
+        streamId = valueStreamId;
+        endStream = valueEndStream;
+        promisedStreamId = valuePromisedStreamId;
+        active = true;
+    }
+
+    private boolean append(ByteSequence fragment) {
+        if ((long) fragment.length() + encodedLength
+                > decoder.config().maxEncodedHeaderBlockSize()) {
+            return false;
+        }
+        if (!fragment.isEmpty()) {
+            fragments.add(fragment);
+        }
+        encodedLength += fragment.length();
+        return true;
+    }
+
+    private HpackFrameAnalysis discardOversized(int discardedStreamId,
+                                                 boolean endHeaders) {
+        emit(HpackDiagnosticReason.RESOURCE_LIMIT, discardedStreamId,
+                "Encoded field block exceeds configured limit");
+        decoder.discardObservedContext("Oversized field block was not decoded");
+        clearBlock();
+        if (!endHeaders) {
+            discarding = true;
+            streamId = discardedStreamId;
+        }
+        return result(HpackFrameAnalysisStatus.BLOCK_DISCARDED, null);
+    }
+
+    private HpackFrameAnalysis complete() {
+        int completedStreamId = streamId;
         try {
-            HpackDecodeResult decoded = decoder.decodeFragments(fragments, encodedLength);
-            DecodedHeaderBlock result = new DecodedHeaderBlock(origin, streamId, endStream,
-                    origin == HeaderBlockOrigin.PUSH_PROMISE
+            HpackBlockAnalysis analysis = decoder.analyzeFragments(fragments,
+                    encodedLength, completedStreamId);
+            DecodedHeaderBlock block = new DecodedHeaderBlock(origin, completedStreamId,
+                    endStream, origin == HeaderBlockOrigin.PUSH_PROMISE
                             ? OptionalInt.of(promisedStreamId) : OptionalInt.empty(),
-                    decoded.fields(), decoded.recoveryEvents());
+                    analysis.fields(), analysis.status(), analysis.omittedFieldCount(),
+                    analysis.contextCompleteness());
+            return result(HpackFrameAnalysisStatus.BLOCK_ANALYZED, block);
+        } finally {
             clearBlock();
-            return result;
-        } catch (HpackDecodingException exception) {
-            int failedStreamId = streamId;
-            fail();
-            throw exception.withStreamId(failedStreamId);
         }
     }
 
@@ -316,30 +298,39 @@ public final class HpackFrameAssembler {
         promisedStreamId = 0;
         encodedLength = 0;
         active = false;
+        discarding = false;
     }
 
-    private void fail() {
-        clearBlock();
-        failed = true;
+    private void emit(HpackDiagnosticReason reason, int diagnosticStreamId,
+                      String message) {
+        try {
+            diagnosticSink.accept(new HpackDiagnostic(reason, -1, -1,
+                    diagnosticStreamId, message));
+        } catch (RuntimeException exception) {
+            decoder.invalidateAfterListenerFailure();
+            clearBlock();
+            throw exception;
+        }
     }
 
-    private static HpackFrameSequenceException sequenceError(
-            HpackFrameSequenceReason reason, int streamId, String message) {
-        return new HpackFrameSequenceException(reason, streamId, message);
+    private HpackFrameAnalysis result(HpackFrameAnalysisStatus status,
+                                      DecodedHeaderBlock block) {
+        return new HpackFrameAnalysis(status, Optional.ofNullable(block),
+                decoder.contextCompleteness());
     }
 
     private static void validateRestoredAssembler(HpackFrameAssemblerSnapshot snapshot,
-                                                   HeaderBlockOrigin origin,
-                                                   int promisedStreamId)
+                                                   HeaderBlockOrigin restoredOrigin,
+                                                   int restoredPromisedStream)
             throws HpackSnapshotException {
-        if (snapshot.streamId() <= 0) {
-            throw invalidAssemblerSnapshot("Active snapshot has an invalid stream ID");
+        if (restoredOrigin == null || snapshot.streamId() <= 0) {
+            throw invalidAssemblerSnapshot("Active snapshot has invalid metadata");
         }
-        if (origin == HeaderBlockOrigin.HEADERS && promisedStreamId != 0) {
+        if (restoredOrigin == HeaderBlockOrigin.HEADERS && restoredPromisedStream != 0) {
             throw invalidAssemblerSnapshot("HEADERS snapshot has a promised stream ID");
         }
-        if (origin == HeaderBlockOrigin.PUSH_PROMISE
-                && (promisedStreamId <= 0 || snapshot.endStream())) {
+        if (restoredOrigin == HeaderBlockOrigin.PUSH_PROMISE
+                && (restoredPromisedStream <= 0 || snapshot.endStream())) {
             throw invalidAssemblerSnapshot("Invalid PUSH_PROMISE snapshot metadata");
         }
     }

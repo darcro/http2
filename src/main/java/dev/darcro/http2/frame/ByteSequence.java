@@ -33,6 +33,20 @@ public final class ByteSequence {
         return new ByteSequence(bytes, offset, length);
     }
 
+    /** Returns an independently owned copy of the complete array. */
+    public static ByteSequence copyOf(byte[] bytes) {
+        Objects.requireNonNull(bytes, "bytes");
+        return new ByteSequence(bytes.clone(), 0, bytes.length);
+    }
+
+    /** Returns an independently owned copy of the selected array range. */
+    public static ByteSequence copyOf(byte[] bytes, int offset, int length) {
+        Objects.requireNonNull(bytes, "bytes");
+        Objects.checkFromIndexSize(offset, length, bytes.length);
+        byte[] copy = Arrays.copyOfRange(bytes, offset, offset + length);
+        return new ByteSequence(copy, 0, copy.length);
+    }
+
     public int length() {
         return length;
     }
