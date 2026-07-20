@@ -165,11 +165,9 @@ Assembler snapshots include decoder state, context completeness, whether the
 table limit is known, an incomplete block, or a discard-through-END_HEADERS
 state. Restore validates the snapshot against current resource limits.
 
-Current writers emit format version 2. Readers also accept version 1 and map it
-conservatively to `PARTIAL` with an unknown table limit while retaining saved
-dynamic entries. Snapshot bytes are an internal binary interchange format, not
-Java serialization. Treat captured header values as sensitive when storing
-them.
+Snapshots use format version 1; other versions are rejected. Snapshot bytes are
+an internal binary interchange format, not Java serialization. Treat captured
+header values as sensitive when storing them.
 
 Decoder, assembler, parser, and snapshot objects are not intended for
 concurrent mutation. Confine each assembler to the worker processing its

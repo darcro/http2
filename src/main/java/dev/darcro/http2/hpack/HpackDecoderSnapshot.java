@@ -5,7 +5,7 @@ import java.util.OptionalInt;
 
 /** Immutable, inspectable state for resuming one HPACK decoding context. */
 public final class HpackDecoderSnapshot {
-    public static final int FORMAT_VERSION = 2;
+    public static final int FORMAT_VERSION = 1;
 
     private final int dynamicTableLimit;
     private final int maximumTableSize;

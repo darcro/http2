@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 
 class HpackSnapshotTest {
     @Test
-    void decoderVersionTwoRoundTripPreservesStateAndCompleteness() throws Exception {
+    void decoderSnapshotRoundTripPreservesStateAndCompleteness() throws Exception {
         HpackDecoder decoder = HpackDecoder.atConnectionStart();
         decoder.analyze(hex("4001610162"));
 
@@ -25,30 +25,12 @@ class HpackSnapshotTest {
         HpackDecoder restored = HpackDecoder.restore(snapshot,
                 HpackDecoderConfig.defaults());
 
-        assertEquals(2, HpackDecoderSnapshot.FORMAT_VERSION);
+        assertEquals(1, HpackDecoderSnapshot.FORMAT_VERSION);
+        assertEquals(1, Byte.toUnsignedInt(decoder.snapshot().toByteArray()[4]));
         assertEquals(HpackContextCompleteness.OBSERVED_COMPLETE,
                 snapshot.contextCompleteness());
         assertTrue(snapshot.tableLimitKnown());
         assertEquals("a", restored.analyze(hex("be")).fields().get(0).nameUtf8());
-    }
-
-    @Test
-    void readsVersionOneSnapshotConservativelyAndRetainsEntries() throws Exception {
-        byte[] versionOne = hex(
-                "48324850010100000000001a"
-                        + "0000100000001000ffffffff00000001"
-                        + "00000001000000016162");
-
-        HpackDecoderSnapshot snapshot = HpackDecoderSnapshot.fromByteArray(versionOne);
-        HpackDecoder restored = HpackDecoder.restore(snapshot,
-                HpackDecoderConfig.defaults());
-        HpackBlockAnalysis result = restored.analyze(hex("be"));
-
-        assertEquals(HpackContextCompleteness.PARTIAL, snapshot.contextCompleteness());
-        assertFalse(snapshot.tableLimitKnown());
-        assertEquals("a", result.fields().get(0).nameUtf8());
-        assertEquals(HpackValueSource.DYNAMIC_TABLE,
-                result.fields().get(0).provenance().nameSource());
     }
 
     @Test

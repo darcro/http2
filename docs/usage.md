@@ -130,9 +130,66 @@ having to repeatedly convert and scan names.
 Malformed HPACK input, missing dynamic indexes, uncertain context, and assembly
 sequence problems are delivered to the configured `HpackDiagnosticSink`.
 Results still contain safely decoded fields, an `INCOMPLETE` status, and the
-number of omitted fields where known. A missing indexed name for an incremental
-literal invalidates local dynamic-table reconstruction to prevent shifted
-indexes from producing false mappings; later observed inserts rebuild context.
+number of omitted fields where known.
+
+The sink is called synchronously during analysis. The default sink does nothing
+and diagnostics are not stored internally, so callers can choose to collect,
+log, or stream them. Keep the sink non-throwing; an exception from it propagates
+after uncertain decoder state is invalidated.
+
+The following example supplies a valid HEADERS frame whose HPACK field block
+contains invalid Huffman padding. The frame itself is observed successfully,
+but header analysis is incomplete:
+
+```java
+List<HpackDiagnostic> diagnostics = new ArrayList<>();
+HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart(
+        HpackDecoderConfig.defaults(), diagnostics::add);
+
+byte[] malformedBytes = HexFormat.of().parseHex(
+        "0000040104000000010081ff00");
+Http2Frame malformedFrame = parser.observe(malformedBytes)
+        .frame().orElseThrow();
+
+HpackFrameAnalysis failure = assembler.accept(malformedFrame);
+DecodedHeaderBlock partial = failure.decodedBlock().orElseThrow();
+
+System.out.println(failure.status());             // BLOCK_ANALYZED
+System.out.println(partial.analysisStatus());     // INCOMPLETE
+System.out.println(partial.contextCompleteness());// PARTIAL
+diagnostics.forEach(System.out::println);         // MALFORMED_BLOCK, then context change
+```
+
+`BLOCK_ANALYZED` means that the complete encoded block reached the decoder; use
+the decoded block's `analysisStatus()` to determine whether all of it was
+decoded. Fields decoded safely before the fault remain available.
+
+Malformed wire content does not make the assembler unusable. Uncertain dynamic
+table reconstruction is cleared, so a later block can still be processed:
+
+```java
+byte[] followingBytes = HexFormat.of().parseHex(
+        "00000101040000000382"); // indexed static-table field: :method GET
+Http2Frame followingFrame = parser.observe(followingBytes)
+        .frame().orElseThrow();
+
+DecodedHeaderBlock following = assembler.accept(followingFrame)
+        .decodedBlock().orElseThrow();
+
+System.out.println(following.analysisStatus()); // COMPLETE
+System.out.println(following.method().orElseThrow()); // GET
+```
+
+Truncated HPACK strings, invalid Huffman encodings, invalid integer encodings,
+and misplaced or excessive dynamic-table size updates follow this same
+best-effort path. They produce an incomplete result and diagnostics rather than
+terminating subsequent analysis. Later static-table and literal fields can be
+decoded normally. Dynamic-table references may be omitted until observed
+insertions rebuild enough local state.
+
+A missing indexed name for an incremental literal also invalidates local
+dynamic-table reconstruction to prevent shifted indexes from producing false
+mappings; later observed inserts rebuild context.
 
 Direct `HpackDecoder.analyze` is available for integrations that already have
 a complete HPACK field block. Normal frame processing should use the assembler,

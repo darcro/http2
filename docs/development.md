@@ -63,17 +63,16 @@ decoder state must first be invalidated.
 
 ### Snapshot format
 
-Snapshot encoding is implemented centrally by `HpackSnapshotCodec`. Version 2
+Snapshot encoding is implemented centrally by `HpackSnapshotCodec`. Version 1
 stores context completeness and table-limit knowledge; assembler encoding also
-preserves discard state. The version 1 reader remains supported and maps old
-state to `PARTIAL`/unknown while retaining saved entries.
+preserves discard state. Other format versions are rejected.
 
 Changes to the binary format require:
 
 1. Incrementing the format version.
-2. Retaining explicit compatibility behavior where practical.
+2. Deciding explicitly whether older versions should remain accepted.
 3. Strict length, flag, range, and resource validation.
-4. Fixed-fixture compatibility tests.
+4. Fixed-fixture version and corruption tests.
 5. Updates to both user-facing guides.
 
 Do not use Java native serialization for snapshots.
@@ -108,7 +107,7 @@ real-world frame data. Changes should cover:
 - missing dynamic indexes and provenance;
 - decoder reuse after malformed or oversized input;
 - context transitions and table reconstruction;
-- snapshot round trips, version 1 compatibility, and corruption; and
+- snapshot round trips, unsupported versions, and corruption; and
 - configured resource ceilings.
 
 Prefer fixed byte fixtures for protocol examples. Assert structured status,

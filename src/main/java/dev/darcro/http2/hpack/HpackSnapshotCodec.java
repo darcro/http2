@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/** Versioned binary snapshot codec with backward-compatible version 1 reads. */
+/** Binary codec for HPACK snapshot format version 1. */
 final class HpackSnapshotCodec {
     private static final byte[] MAGIC = {'H', '2', 'H', 'P'};
     private static final int HEADER_SIZE = 12;
@@ -42,18 +42,16 @@ final class HpackSnapshotCodec {
 
     static HpackDecoderSnapshot decodeDecoder(byte[] encoded)
             throws HpackSnapshotException {
-        Opened opened = open(encoded, KIND_DECODER);
-        Reader reader = opened.reader();
-        HpackDecoderSnapshot result = readDecoderPayload(reader, opened.version());
+        Reader reader = open(encoded, KIND_DECODER);
+        HpackDecoderSnapshot result = readDecoderPayload(reader);
         reader.requireEnd();
         return result;
     }
 
     static HpackFrameAssemblerSnapshot decodeAssembler(byte[] encoded)
             throws HpackSnapshotException {
-        Opened opened = open(encoded, KIND_ASSEMBLER);
-        Reader reader = opened.reader();
-        HpackDecoderSnapshot decoder = readDecoderPayload(reader, opened.version());
+        Reader reader = open(encoded, KIND_ASSEMBLER);
+        HpackDecoderSnapshot decoder = readDecoderPayload(reader);
         int activeValue = reader.readByte();
         int originCode = reader.readByte();
         int endStreamValue = reader.readByte();
@@ -64,8 +62,7 @@ final class HpackSnapshotCodec {
         byte[] incomplete = reader.readBytes(fragmentLength);
         reader.requireEnd();
 
-        if (activeValue > 1 || endStreamValue > 1 || discardValue > 1
-                || (opened.version() == 1 && discardValue != 0)) {
+        if (activeValue > 1 || endStreamValue > 1 || discardValue > 1) {
             throw error(HpackSnapshotErrorReason.INVALID_ASSEMBLER_STATE,
                     reader.position(), "Invalid assembler flags or reserved byte");
         }
@@ -79,7 +76,7 @@ final class HpackSnapshotCodec {
                 endStream, promisedStreamId, incomplete);
     }
 
-    private static Opened open(byte[] encoded, int expectedKind)
+    private static Reader open(byte[] encoded, int expectedKind)
             throws HpackSnapshotException {
         Objects.requireNonNull(encoded, "encoded");
         Reader reader = new Reader(encoded);
@@ -90,7 +87,7 @@ final class HpackSnapshotCodec {
             }
         }
         int version = reader.readByte();
-        if (version != 1 && version != HpackDecoderSnapshot.FORMAT_VERSION) {
+        if (version != HpackDecoderSnapshot.FORMAT_VERSION) {
             throw error(HpackSnapshotErrorReason.UNSUPPORTED_VERSION,
                     reader.position() - 1, "Unsupported HPACK snapshot version " + version);
         }
@@ -112,7 +109,7 @@ final class HpackSnapshotCodec {
             throw error(HpackSnapshotErrorReason.TRUNCATED_INPUT, reader.position(),
                     "Snapshot payload is truncated");
         }
-        return new Opened(reader, version);
+        return reader;
     }
 
     private static void writeHeader(Writer writer, int kind, int payloadSize) {
@@ -150,7 +147,7 @@ final class HpackSnapshotCodec {
         writer.writeByte(0);
     }
 
-    private static HpackDecoderSnapshot readDecoderPayload(Reader reader, int version)
+    private static HpackDecoderSnapshot readDecoderPayload(Reader reader)
             throws HpackSnapshotException {
         int dynamicTableLimit = reader.readInt();
         int maximumTableSize = reader.readInt();
@@ -181,28 +178,24 @@ final class HpackSnapshotCodec {
             entries.add(entry);
         }
 
-        HpackContextCompleteness contextCompleteness = HpackContextCompleteness.PARTIAL;
-        boolean tableLimitKnown = false;
-        if (version >= 2) {
-            int completenessCode = reader.readByte();
-            int knownCode = reader.readByte();
-            int reserved1 = reader.readByte();
-            int reserved2 = reader.readByte();
-            if (completenessCode > 1 || knownCode > 1 || reserved1 != 0
-                    || reserved2 != 0) {
-                throw error(HpackSnapshotErrorReason.INVALID_DECODER_STATE,
-                        reader.position() - 4, "Invalid decoder confidence state");
-            }
-            contextCompleteness = completenessCode == 1
-                    ? HpackContextCompleteness.OBSERVED_COMPLETE
-                    : HpackContextCompleteness.PARTIAL;
-            tableLimitKnown = knownCode == 1;
-            if (contextCompleteness == HpackContextCompleteness.OBSERVED_COMPLETE
-                    && !tableLimitKnown) {
-                throw error(HpackSnapshotErrorReason.INVALID_DECODER_STATE,
-                        reader.position() - 4,
-                        "Observed-complete context requires a known table limit");
-            }
+        int completenessCode = reader.readByte();
+        int knownCode = reader.readByte();
+        int reserved1 = reader.readByte();
+        int reserved2 = reader.readByte();
+        if (completenessCode > 1 || knownCode > 1 || reserved1 != 0
+                || reserved2 != 0) {
+            throw error(HpackSnapshotErrorReason.INVALID_DECODER_STATE,
+                    reader.position() - 4, "Invalid decoder confidence state");
+        }
+        HpackContextCompleteness contextCompleteness = completenessCode == 1
+                ? HpackContextCompleteness.OBSERVED_COMPLETE
+                : HpackContextCompleteness.PARTIAL;
+        boolean tableLimitKnown = knownCode == 1;
+        if (contextCompleteness == HpackContextCompleteness.OBSERVED_COMPLETE
+                && !tableLimitKnown) {
+            throw error(HpackSnapshotErrorReason.INVALID_DECODER_STATE,
+                    reader.position() - 4,
+                    "Observed-complete context requires a known table limit");
         }
 
         validateDecoder(dynamicTableLimit, maximumTableSize, pendingMinimum,
@@ -296,9 +289,6 @@ final class HpackSnapshotCodec {
     private static HpackSnapshotException error(HpackSnapshotErrorReason reason,
                                                 int offset, String message) {
         return new HpackSnapshotException(reason, offset, message);
-    }
-
-    private record Opened(Reader reader, int version) {
     }
 
     private static final class Writer {
