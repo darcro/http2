@@ -12,9 +12,7 @@ import dev.darcro.http2.frame.HeadersFrame;
 import dev.darcro.http2.frame.Http2Flags;
 import dev.darcro.http2.frame.Http2FrameParser;
 import dev.darcro.http2.frame.PushPromiseFrame;
-import java.util.ArrayList;
 import java.util.HexFormat;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class HpackFrameAssemblerTest {
@@ -76,9 +74,8 @@ class HpackFrameAssemblerTest {
 
     @Test
     void recoversOrphanContinuationAndContinues() {
-        List<HpackDiagnostic> diagnostics = new ArrayList<>();
         HpackFrameAssembler assembler = new HpackFrameAssembler(
-                HpackDecoderConfig.defaults(), diagnostics::add);
+                HpackDecoderConfig.defaults());
 
         HpackFrameAnalysis orphan = assembler.accept(continuation(1,
                 Http2Flags.END_HEADERS, hex("82")));
@@ -87,15 +84,14 @@ class HpackFrameAssemblerTest {
 
         assertEquals(HpackFrameAnalysisStatus.BLOCK_DISCARDED, orphan.status());
         assertEquals("GET", later.decodedBlock().orElseThrow().method().orElseThrow());
-        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+        assertTrue(orphan.diagnostics().stream().anyMatch(diagnostic ->
                 diagnostic.reason() == HpackDiagnosticReason.UNEXPECTED_CONTINUATION));
     }
 
     @Test
     void wrongStreamContinuationAbandonsCurrentBlock() {
-        List<HpackDiagnostic> diagnostics = new ArrayList<>();
         HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart(
-                HpackDecoderConfig.defaults(), diagnostics::add);
+                HpackDecoderConfig.defaults());
         assembler.accept(headers(1, 0, "82"));
 
         HpackFrameAnalysis result = assembler.accept(continuation(3,
@@ -103,7 +99,7 @@ class HpackFrameAssemblerTest {
 
         assertEquals(HpackFrameAnalysisStatus.BLOCK_DISCARDED, result.status());
         assertEquals(HpackContextCompleteness.PARTIAL, result.contextCompleteness());
-        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
                 diagnostic.reason() == HpackDiagnosticReason.WRONG_STREAM_CONTINUATION));
     }
 
@@ -154,18 +150,16 @@ class HpackFrameAssemblerTest {
 
     @Test
     void wrongStreamWhileDiscardingEmitsOneDiagnosticAndTracksNewBlock() {
-        List<HpackDiagnostic> diagnostics = new ArrayList<>();
         HpackFrameAssembler assembler = new HpackFrameAssembler(
-                new HpackDecoderConfig(4096, 1, 1024), diagnostics::add);
+                new HpackDecoderConfig(4096, 1, 1024));
         assembler.accept(headers(1, 0, "8286"));
-        diagnostics.clear();
 
         HpackFrameAnalysis result = assembler.accept(continuation(3, 0, hex("82")));
 
         assertEquals(HpackFrameAnalysisStatus.BLOCK_DISCARDED, result.status());
-        assertEquals(1, diagnostics.size());
+        assertEquals(1, result.diagnostics().size());
         assertEquals(HpackDiagnosticReason.WRONG_STREAM_CONTINUATION,
-                diagnostics.get(0).reason());
+                result.diagnostics().get(0).reason());
         assertEquals(3, assembler.snapshot().streamId());
         assertTrue(assembler.snapshot().discarding());
     }
@@ -184,14 +178,22 @@ class HpackFrameAssemblerTest {
     }
 
     @Test
-    void listenerFailureDoesNotLeaveTrustedContext() {
-        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart(
-                HpackDecoderConfig.defaults(), diagnostic -> {
-                    throw new IllegalStateException("sink failed");
-                });
+    void returnsImmutableDiagnosticsScopedToOneFrame() {
+        HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart();
 
-        assertThrows(IllegalStateException.class, () -> assembler.accept(
-                continuation(1, Http2Flags.END_HEADERS, hex("82"))));
+        HpackFrameAnalysis orphan = assembler.accept(
+                continuation(1, Http2Flags.END_HEADERS, hex("82")));
+        HpackFrameAnalysis valid = assembler.accept(
+                headers(1, Http2Flags.END_HEADERS, "82"));
+
+        assertEquals(2, orphan.diagnostics().size());
+        assertEquals(HpackDiagnosticReason.UNEXPECTED_CONTINUATION,
+                orphan.diagnostics().get(0).reason());
+        assertEquals(HpackDiagnosticReason.CONTEXT_BECAME_PARTIAL,
+                orphan.diagnostics().get(1).reason());
+        assertTrue(valid.diagnostics().isEmpty());
+        assertThrows(UnsupportedOperationException.class,
+                () -> orphan.diagnostics().add(orphan.diagnostics().get(0)));
         assertEquals(HpackContextCompleteness.PARTIAL,
                 assembler.contextCompleteness());
     }

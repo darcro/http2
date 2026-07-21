@@ -17,6 +17,7 @@ Http2FrameObservation observation = parser.observe(candidateFrameBytes);
 
 observation.frame().ifPresent(frame -> {
     HpackFrameAnalysis result = assembler.accept(frame);
+    result.diagnostics().forEach(System.out::println);
     result.decodedBlock().ifPresent(block ->
             block.headerFields().first("content-type").ifPresent(field ->
                     System.out.println(field.valueUtf8())));
@@ -25,8 +26,8 @@ observation.frame().ifPresent(frame -> {
 
 Use `Http2FrameExtractor` when input arrives as ordered payload chunks. For an
 already isolated candidate, `observe` returns its raw bytes, frame header when
-available, optional typed frame, and diagnostics. Strict `parse` methods remain
-available when rejection on malformed input is preferred.
+available, optional typed frame, and optional diagnostic. Strict `parse`
+methods remain available when rejection on malformed input is preferred.
 
 ## Documentation
 

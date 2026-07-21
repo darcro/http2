@@ -35,7 +35,7 @@ search restarts at the following byte.
 
 `Http2FrameParser` receives one exact candidate frame. `observe` is the
 passive-analysis API and preserves raw bytes, an optional header, an optional
-typed frame, and diagnostics. `parse` is the strict convenience API.
+typed frame, and at most one diagnostic. `parse` is the strict convenience API.
 
 Parsing is zero-copy by default. Payload records hold `ByteSequence` views into
 the selected input range. `observeOwned` makes exactly one defensive copy and
@@ -75,8 +75,8 @@ policy switch. It must not expose its decoder.
 
 Oversized blocks enter a discard state without retaining further fragments
 until a matching boundary is observed. Snapshots must preserve active and
-discarding states. A diagnostic listener failure may propagate, but uncertain
-decoder state must first be invalidated.
+discarding states. Each returned analysis owns only the diagnostics produced by
+that call.
 
 ### Snapshot format
 
@@ -96,15 +96,17 @@ Do not use Java native serialization for snapshots.
 
 ## Error and diagnostic design
 
-Frame observations contain their own immutable diagnostics. HPACK uses
-`HpackDiagnosticSink`, avoiding unbounded internal accumulation over long
-captures. New diagnostic reasons should identify an analysis fact, not
+Frame observations contain their own optional immutable diagnostic because
+parsing stops at the first fault. HPACK block and frame analyses contain an
+immutable ordered diagnostic list because one call can discover multiple
+related facts. Per-call ownership avoids unbounded internal accumulation over
+long captures. New diagnostic reasons should identify an analysis fact, not
 prescribe endpoint action.
 
 Public passive-analysis methods should return structured outcomes for malformed
 wire input. Exceptions remain appropriate for programming errors, invalid local
 configuration, corrupt snapshot data, and exceptions deliberately thrown by a
-user callback.
+caller-owned integration layer.
 
 ## Testing
 

@@ -363,6 +363,36 @@ class Http2FrameParserTest {
     }
 
     @Test
+    void parsesUsingAnAlreadyDecodedImmutableHeader() throws Exception {
+        byte[] encoded = frame(0, Http2FrameTypes.DATA, Http2Flags.END_STREAM,
+                1, 7, 8);
+        Http2FrameHeader header = new Http2FrameHeader(2, Http2FrameTypes.DATA,
+                Http2Flags.END_STREAM, 1);
+
+        DataFrame parsed = assertInstanceOf(DataFrame.class,
+                parser.parse(encoded, 0, encoded.length, header));
+
+        assertTrue(parsed.endStream());
+        assertArrayEquals(new byte[]{7, 8}, parsed.data().toByteArray());
+        assertThrows(NullPointerException.class,
+                () -> parser.parse(encoded, 0, encoded.length, null));
+    }
+
+    @Test
+    void validatesDecodedHeaderFieldRanges() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Http2FrameHeader(-1, 0, 0, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Http2FrameHeader(0x0100_0000, 0, 0, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Http2FrameHeader(0, 256, 0, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Http2FrameHeader(0, 0, 256, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Http2FrameHeader(0, 0, 0, -1));
+    }
+
+    @Test
     void observesValidFramesWithoutCopying() {
         byte[] encoded = frame(0, Http2FrameTypes.DATA, 0, 1, 1, 2);
 
@@ -371,7 +401,7 @@ class Http2FrameParserTest {
                 observation.frame().orElseThrow());
 
         assertTrue(observation.valid());
-        assertTrue(observation.diagnostics().isEmpty());
+        assertTrue(observation.diagnostic().isEmpty());
         assertEquals(2, observation.header().orElseThrow().payloadLength());
         encoded[9] = 9;
         assertEquals(9, data.data().unsignedByteAt(0));
@@ -390,7 +420,10 @@ class Http2FrameParserTest {
         assertEquals(Http2FrameTypes.SETTINGS,
                 observation.header().orElseThrow().type());
         assertEquals(ParseErrorReason.INVALID_SETTING,
-                observation.diagnostics().get(0).reason());
+                observation.diagnostic().orElseThrow().reason());
+        assertEquals("INVALID_SETTING [offset=11, frameType=0x04]: "
+                        + "Invalid value 2 for setting 0x2",
+                observation.diagnostic().orElseThrow().toString());
         assertArrayEquals(encoded, observation.rawBytes().toByteArray());
     }
 
@@ -407,7 +440,7 @@ class Http2FrameParserTest {
         Http2FrameObservation truncated = parser.observe(new byte[8]);
         assertTrue(truncated.header().isEmpty());
         assertEquals(ParseErrorReason.TRUNCATED_HEADER,
-                truncated.diagnostics().get(0).reason());
+                truncated.diagnostic().orElseThrow().reason());
     }
 
     @Test

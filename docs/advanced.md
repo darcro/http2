@@ -45,7 +45,7 @@ trailing incomplete data and makes the extractor terminal.
 Use `observe(byte[])` or its range overload for evidence-preserving analysis.
 An `Http2FrameObservation` contains the complete raw candidate, the parsed
 nine-byte header when available, an optional typed frame, and structured
-diagnostics.
+diagnostic when parsing stopped at a fault.
 
 `observeOwned` first copies the selected range and makes all returned views
 refer to that copy. Plain `observe` and `parse` are zero-copy. `ByteSequence`
@@ -54,7 +54,9 @@ modifying that array.
 
 The strict `parse` overloads throw `ParseErrorException`. They are useful in
 pipelines that have already classified malformed candidates and do not need an
-observation object.
+observation object. A header-aware overload accepts an immutable
+`Http2FrameHeader` when the caller has already decoded the selected range; it
+does not reread or verify those nine wire bytes.
 
 The default parser permits payloads up to the 24-bit HTTP/2 wire maximum. Use
 `new Http2FrameParser(maxFrameSize)` to apply a smaller local resource limit.
@@ -68,16 +70,15 @@ The default decoder and assembler begin with
 that may start mid-connection:
 
 ```java
-HpackDiagnosticSink sink = diagnostic -> log(diagnostic);
 HpackFrameAssembler assembler = new HpackFrameAssembler(
-        HpackDecoderConfig.defaults(), sink);
+        HpackDecoderConfig.defaults());
 ```
 
 When observation definitely begins at the connection start, use:
 
 ```java
 HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart(
-        HpackDecoderConfig.defaults(), sink);
+        HpackDecoderConfig.defaults());
 ```
 
 `OBSERVED_COMPLETE` means that the decoder has a coherent history relative to
@@ -115,12 +116,22 @@ infer direction or SETTINGS applicability on its own.
 
 `HpackFrameAssembler.accept` returns `HpackFrameAnalysis`:
 
-| Status | Meaning |
-| --- | --- |
-| `IGNORED` | The frame does not carry an HPACK field block |
-| `AWAITING_CONTINUATION` | A field block remains incomplete |
-| `BLOCK_ANALYZED` | A complete block produced a `DecodedHeaderBlock` |
-| `BLOCK_DISCARDED` | Unsafe or oversized in-progress encoded data was abandoned |
+| Status | Interpretation | Caller action |
+| --- | --- | --- |
+| `IGNORED` | Neutral: this frame did not complete or discard a field block | No header result is expected; continue with the next frame |
+| `AWAITING_CONTINUATION` | Normal progress: a field block has started but is incomplete | Continue supplying frames in observation order |
+| `BLOCK_ANALYZED` | Assembly completed and a `DecodedHeaderBlock` was produced; HPACK decoding may still be complete or incomplete | Inspect `decodedBlock().analysisStatus()` and `diagnostics()` before treating all fields as available |
+| `BLOCK_DISCARDED` | Recovery/failure: a block could not be assembled or analyzed safely and was abandoned | Inspect `diagnostics()` for the reason, then continue supplying later frames |
+
+Each result also owns an immutable ordered diagnostics list containing only
+facts discovered while accepting that frame. More than one diagnostic may be
+reported, such as a sequence fault followed by loss of trusted compression
+context.
+
+Do not treat `BLOCK_ANALYZED` alone as a success flag. It confirms that the
+encoded block reached HPACK analysis; only `HpackBlockStatus.COMPLETE` confirms
+that the full block was decoded. An `INCOMPLETE` block can still contain useful,
+safely decoded fields and provenance.
 
 A decoded block has `COMPLETE` or `INCOMPLETE` analysis status, an omitted-field
 count, and the decoder context completeness at that point. `recovered()` is a
@@ -158,25 +169,23 @@ and `status`.
 
 ## Diagnostics
 
-Configure an `HpackDiagnosticSink` when diagnostics must be retained. The
-default sink is a no-op to avoid hidden allocation over long captures.
-Diagnostic reasons cover missing indexes, malformed blocks, resource limits,
-sequence recovery, discarded blocks, and context becoming partial.
+Read diagnostics from `HpackFrameAnalysis.diagnostics()` after every accepted
+frame. Diagnostic reasons cover missing indexes, malformed blocks, resource
+limits, sequence recovery, discarded blocks, and context becoming partial.
+The immutable per-call list avoids hidden accumulation over long captures and
+can be logged, retained, or discarded by the caller.
 
-The callback runs synchronously. If it throws, the exception is propagated;
-the decoder conservatively invalidates uncertain state before allowing it to
-escape. Keep callbacks fast and non-throwing in capture pipelines.
-
-Frame parsing diagnostics are stored directly in `Http2FrameObservation`
-because they describe one immutable candidate. HPACK diagnostics use a sink
-because decoding state spans many frames.
+The optional frame parsing diagnostic is stored directly in
+`Http2FrameObservation` because parsing exits on its first fault. HPACK results
+use a list because processing one frame can reveal multiple related facts.
 
 ## Direct decoder use
 
 Use `HpackDecoder.analyze` only when the caller already owns complete HPACK
 field blocks. It returns `HpackBlockAnalysis` rather than throwing for malformed
-wire content. Frame-based integrations should use `HpackFrameAssembler`, which
-owns its decoder and prevents divergence between assembly and HPACK state.
+wire content; diagnostics are available from that result's `diagnostics()`
+list. Frame-based integrations should use `HpackFrameAssembler`, which owns its
+decoder and prevents divergence between assembly and HPACK state.
 
 ## Snapshot and restore
 
@@ -187,7 +196,7 @@ byte[] encoded = assembler.snapshot().toByteArray();
 HpackFrameAssemblerSnapshot snapshot =
         HpackFrameAssemblerSnapshot.fromByteArray(encoded);
 HpackFrameAssembler restored = HpackFrameAssembler.restore(
-        snapshot, config, sink);
+        snapshot, config);
 ```
 
 Assembler snapshots include decoder state, context completeness, whether the

@@ -1,6 +1,5 @@
 package dev.darcro.http2.frame;
 
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -8,12 +7,12 @@ import java.util.Optional;
 public record Http2FrameObservation(ByteSequence rawBytes,
                                     Optional<Http2FrameHeader> header,
                                     Optional<Http2Frame> frame,
-                                    List<FrameDiagnostic> diagnostics) {
+                                    Optional<FrameDiagnostic> diagnostic) {
     public Http2FrameObservation {
         Objects.requireNonNull(rawBytes, "rawBytes");
         Objects.requireNonNull(header, "header");
         Objects.requireNonNull(frame, "frame");
-        diagnostics = List.copyOf(diagnostics);
+        Objects.requireNonNull(diagnostic, "diagnostic");
     }
 
     public boolean valid() {

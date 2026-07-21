@@ -39,10 +39,13 @@ Http2FrameExtractor extractor = new Http2FrameExtractor(event -> {
     } else if (event instanceof Http2FrameExtracted extracted) {
         System.out.println("frame at " + extracted.streamOffset()
                 + " via " + extracted.boundaryProvenance());
-        extracted.observation().frame().ifPresent(assembler::accept);
+        extracted.observation().frame().ifPresent(frame -> {
+            HpackFrameAnalysis analysis = assembler.accept(frame);
+            analysis.diagnostics().forEach(System.out::println);
+        });
     } else if (event instanceof Http2FrameCandidateRejected rejected) {
         System.out.println("rejected candidate at " + rejected.streamOffset());
-        rejected.observation().diagnostics().forEach(System.out::println);
+        rejected.observation().diagnostic().ifPresent(System.out::println);
     } else if (event instanceof Http2ExtractionDiagnostic diagnostic) {
         System.out.println(diagnostic);
     }
@@ -77,7 +80,7 @@ Http2FrameObservation observation = parser.observe(candidateBytes);
 System.out.println("captured bytes=" + observation.rawBytes().length());
 observation.header().ifPresent(header ->
         System.out.println("stream=" + header.streamId()));
-observation.diagnostics().forEach(System.out::println);
+observation.diagnostic().ifPresent(System.out::println);
 
 observation.frame().ifPresent(frame -> {
     if (frame instanceof DataFrame data) {
@@ -114,14 +117,14 @@ constructor assumes that capture may have begun mid-connection, so its HPACK
 context is `PARTIAL`. No input-gap notification is required or available.
 
 ```java
-List<HpackDiagnostic> diagnostics = new ArrayList<>();
 HpackFrameAssembler assembler = new HpackFrameAssembler(
-        HpackDecoderConfig.defaults(), diagnostics::add);
+        HpackDecoderConfig.defaults());
 
 Http2FrameObservation observation = parser.observe(candidateBytes);
 observation.frame().ifPresent(frame -> {
     HpackFrameAnalysis analysis = assembler.accept(frame);
     System.out.println(analysis.status());
+    analysis.diagnostics().forEach(System.out::println);
 
     analysis.decodedBlock().ifPresent(block -> {
         System.out.println("stream=" + block.streamId());
@@ -139,8 +142,17 @@ observation.frame().ifPresent(frame -> {
 
 Feed all observed frames in a direction to the assembler in observation order.
 Non-header frames let it identify and recover from interrupted CONTINUATION
-sequences. `HpackFrameAnalysisStatus` distinguishes ignored frames, blocks in
-progress, decoded blocks, and discarded blocks. Recovery is unconditional and
+sequences. Interpret `HpackFrameAnalysisStatus` as follows:
+
+| Status | Interpretation |
+| --- | --- |
+| `IGNORED` | Neutral: the frame did not complete or discard a header block |
+| `AWAITING_CONTINUATION` | Normal progress: retain the assembler and continue supplying frames |
+| `BLOCK_ANALYZED` | Assembly completed; inspect the decoded block's `analysisStatus()` and the returned diagnostics to determine decoding quality |
+| `BLOCK_DISCARDED` | Recovery from a block that could not be analyzed safely; inspect diagnostics and continue with later frames |
+
+`BLOCK_ANALYZED` is not by itself a guarantee of complete HPACK decoding. The
+decoded block may be `COMPLETE` or `INCOMPLETE`. Recovery is unconditional and
 the assembler never enters a terminal error state.
 
 If capture is known to begin at the connection start, use
@@ -171,23 +183,22 @@ having to repeatedly convert and scan names.
 ## Diagnostics and best-effort output
 
 Malformed HPACK input, missing dynamic indexes, uncertain context, and assembly
-sequence problems are delivered to the configured `HpackDiagnosticSink`.
-Results still contain safely decoded fields, an `INCOMPLETE` status, and the
-number of omitted fields where known.
+sequence problems are returned in `HpackFrameAnalysis.diagnostics()`. The
+immutable list contains only diagnostics produced while accepting that frame;
+it is empty when no fault was observed. Results still contain safely decoded
+fields, an `INCOMPLETE` status, and the number of omitted fields where known.
 
-The sink is called synchronously during analysis. The default sink does nothing
-and diagnostics are not stored internally, so callers can choose to collect,
-log, or stream them. Keep the sink non-throwing; an exception from it propagates
-after uncertain decoder state is invalidated.
+`FrameDiagnostic` and `HpackDiagnostic` provide concise `toString()` output for
+direct logging, including only the offset, frame type, index, and stream context
+available for that fault.
 
 The following example supplies a valid HEADERS frame whose HPACK field block
 contains invalid Huffman padding. The frame itself is observed successfully,
 but header analysis is incomplete:
 
 ```java
-List<HpackDiagnostic> diagnostics = new ArrayList<>();
 HpackFrameAssembler assembler = HpackFrameAssembler.atConnectionStart(
-        HpackDecoderConfig.defaults(), diagnostics::add);
+        HpackDecoderConfig.defaults());
 
 byte[] malformedBytes = HexFormat.of().parseHex(
         "0000040104000000010081ff00");
@@ -200,7 +211,7 @@ DecodedHeaderBlock partial = failure.decodedBlock().orElseThrow();
 System.out.println(failure.status());             // BLOCK_ANALYZED
 System.out.println(partial.analysisStatus());     // INCOMPLETE
 System.out.println(partial.contextCompleteness());// PARTIAL
-diagnostics.forEach(System.out::println);         // MALFORMED_BLOCK, then context change
+failure.diagnostics().forEach(System.out::println);// MALFORMED_BLOCK, then context change
 ```
 
 `BLOCK_ANALYZED` means that the complete encoded block reached the decoder; use
@@ -235,7 +246,8 @@ dynamic-table reconstruction to prevent shifted indexes from producing false
 mappings; later observed inserts rebuild context.
 
 Direct `HpackDecoder.analyze` is available for integrations that already have
-a complete HPACK field block. Normal frame processing should use the assembler,
+a complete HPACK field block. Its `HpackBlockAnalysis.diagnostics()` list has
+the same per-call semantics. Normal frame processing should use the assembler,
 which owns its decoder and its cross-frame state.
 
 See the [advanced guide](advanced.md) for resource limits, SETTINGS, snapshots,

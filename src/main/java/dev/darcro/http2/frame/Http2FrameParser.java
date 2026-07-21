@@ -17,7 +17,7 @@ public final class Http2FrameParser {
     public static final int MIN_MAX_FRAME_SIZE = INITIAL_MAX_FRAME_SIZE;
     public static final int MAX_FRAME_SIZE_LIMIT = 0x00ff_ffff;
     public static final int DEFAULT_MAX_FRAME_SIZE = MAX_FRAME_SIZE_LIMIT;
-    private static final int HEADER_LENGTH = 9;
+    private static final int HEADER_LENGTH = Http2FrameHeader.LENGTH;
 
     private final int maxFrameSize;
 
@@ -40,6 +40,16 @@ public final class Http2FrameParser {
     public Http2Frame parse(byte[] frameBytes) throws ParseErrorException {
         Objects.requireNonNull(frameBytes, "frameBytes");
         return parse(frameBytes, 0, frameBytes.length);
+    }
+
+    /**
+     * Parses a complete frame using an already decoded header. The supplied
+     * header must describe {@code frameBytes}; its wire bytes are not reread.
+     */
+    public Http2Frame parse(byte[] frameBytes, Http2FrameHeader header)
+            throws ParseErrorException {
+        Objects.requireNonNull(frameBytes, "frameBytes");
+        return parse(frameBytes, 0, frameBytes.length, header);
     }
 
     /**
@@ -74,21 +84,21 @@ public final class Http2FrameParser {
 
     private Http2FrameObservation observeRange(byte[] frameBytes, int offset, int length) {
         ByteSequence raw = ByteSequence.wrap(frameBytes, offset, length);
-        Optional<Http2FrameHeader> header = length < HEADER_LENGTH
-                ? Optional.empty()
-                : Optional.of(new Http2FrameHeader(unsigned24(frameBytes, offset),
-                        unsigned8(frameBytes, offset + 3),
-                        unsigned8(frameBytes, offset + 4),
-                        signed31(frameBytes, offset + 5)));
+        Http2FrameHeader decodedHeader = length < HEADER_LENGTH
+                ? null : decodeHeader(frameBytes, offset);
+        Optional<Http2FrameHeader> header = Optional.ofNullable(decodedHeader);
         try {
             return new Http2FrameObservation(raw, header,
-                    Optional.of(parse(frameBytes, offset, length)), List.of());
+                    Optional.of(decodedHeader == null
+                            ? parse(frameBytes, offset, length)
+                            : parse(frameBytes, offset, length, decodedHeader)),
+                    Optional.empty());
         } catch (ParseErrorException error) {
             int type = error.frameType().orElse(-1);
             FrameDiagnostic diagnostic = new FrameDiagnostic(error.reason(),
                     error.offset(), type, error.getMessage());
             return new Http2FrameObservation(raw, header, Optional.empty(),
-                    List.of(diagnostic));
+                    Optional.of(diagnostic));
         }
     }
 
@@ -103,10 +113,29 @@ public final class Http2FrameParser {
                     "HTTP/2 frame header requires 9 bytes; received " + length);
         }
 
-        int payloadLength = unsigned24(frameBytes, offset);
-        int type = unsigned8(frameBytes, offset + 3);
-        int flags = unsigned8(frameBytes, offset + 4);
-        int streamId = signed31(frameBytes, offset + 5);
+        return parse(frameBytes, offset, length, decodeHeader(frameBytes, offset));
+    }
+
+    /**
+     * Parses exactly one frame from an array range using an already decoded
+     * immutable header. The header must correspond to the first nine bytes of
+     * the selected range; this method intentionally does not verify them.
+     */
+    public Http2Frame parse(byte[] frameBytes, int offset, int length,
+                            Http2FrameHeader header) throws ParseErrorException {
+        Objects.requireNonNull(frameBytes, "frameBytes");
+        Objects.requireNonNull(header, "header");
+        Objects.checkFromIndexSize(offset, length, frameBytes.length);
+
+        if (length < HEADER_LENGTH) {
+            throw error(ParseErrorReason.TRUNCATED_HEADER, length, -1,
+                    "HTTP/2 frame header requires 9 bytes; received " + length);
+        }
+
+        int payloadLength = header.payloadLength();
+        int type = header.type();
+        int flags = header.flags();
+        int streamId = header.streamId();
 
         if (payloadLength > maxFrameSize) {
             throw error(ParseErrorReason.FRAME_SIZE_ERROR, 0, type,
@@ -147,6 +176,13 @@ public final class Http2FrameParser {
             default -> new UnknownFrame(payloadLength, type, flags, streamId,
                     bytes(frameBytes, payloadOffset, payloadLength));
         };
+    }
+
+    private static Http2FrameHeader decodeHeader(byte[] frameBytes, int offset) {
+        return new Http2FrameHeader(unsigned24(frameBytes, offset),
+                unsigned8(frameBytes, offset + 3),
+                unsigned8(frameBytes, offset + 4),
+                signed31(frameBytes, offset + 5));
     }
 
     private DataFrame parseData(byte[] bytes, int payloadOffset, int length,

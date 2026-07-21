@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -92,11 +91,10 @@ class HpackDecoderTest {
 
     @Test
     void skipsUnavailableIndexesAndEmitsDiagnostics() {
-        List<HpackDiagnostic> diagnostics = new ArrayList<>();
-        HpackDecoder decoder = new HpackDecoder(HpackDecoderConfig.defaults(),
-                diagnostics::add);
+        HpackDecoder decoder = new HpackDecoder(HpackDecoderConfig.defaults());
 
         HpackBlockAnalysis result = decoder.analyze(hex("be82"));
+        List<HpackDiagnostic> diagnostics = result.diagnostics();
 
         assertTrue(result.complete());
         assertEquals(1, result.omittedFieldCount());
@@ -104,13 +102,24 @@ class HpackDecoderTest {
         assertEquals(HpackDiagnosticReason.MISSING_DYNAMIC_TABLE_INDEX,
                 diagnostics.get(0).reason());
         assertEquals(62, diagnostics.get(0).index());
+        assertEquals("MISSING_DYNAMIC_TABLE_INDEX [offset=0, index=62]: "
+                        + "HPACK dynamic table index 62 is unavailable in the observed context",
+                diagnostics.get(0).toString());
+    }
+
+    @Test
+    void diagnosticLogTextOmitsUnavailableContext() {
+        HpackDiagnostic diagnostic = new HpackDiagnostic(
+                HpackDiagnosticReason.CONTEXT_BECAME_PARTIAL,
+                -1, -1, 3, "compression context is uncertain");
+
+        assertEquals("CONTEXT_BECAME_PARTIAL [streamId=3]: "
+                + "compression context is uncertain", diagnostic.toString());
     }
 
     @Test
     void unknownIncrementalNameClearsPotentiallyMisalignedTable() {
-        List<HpackDiagnostic> diagnostics = new ArrayList<>();
-        HpackDecoder decoder = new HpackDecoder(HpackDecoderConfig.defaults(),
-                diagnostics::add);
+        HpackDecoder decoder = new HpackDecoder(HpackDecoderConfig.defaults());
         decoder.analyze(hex("4001610162"));
         assertEquals(34, decoder.dynamicTableSize());
 
@@ -121,30 +130,28 @@ class HpackDecoderTest {
         assertEquals(0, decoder.dynamicTableSize());
         assertEquals(1, laterIndex.omittedFieldCount());
         assertEquals("GET", laterIndex.fields().get(0).valueUtf8());
-        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+        assertTrue(missingName.diagnostics().stream().anyMatch(diagnostic ->
                 diagnostic.reason() == HpackDiagnosticReason.CONTEXT_BECAME_PARTIAL));
     }
 
     @Test
     void omittedNamedLiteralsStillConsumeHeaderListBudget() {
-        List<HpackDiagnostic> diagnostics = new ArrayList<>();
         HpackDecoder decoder = new HpackDecoder(
-                new HpackDecoderConfig(4096, 1024, 40), diagnostics::add);
+                new HpackDecoderConfig(4096, 1024, 40));
 
         HpackBlockAnalysis result = decoder.analyze(hex(
                 "0f2f0561626364650f2f056162636465"));
 
         assertEquals(HpackBlockStatus.INCOMPLETE, result.status());
         assertEquals(1, result.omittedFieldCount());
-        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+        assertTrue(result.diagnostics().stream().anyMatch(diagnostic ->
                 diagnostic.reason() == HpackDiagnosticReason.RESOURCE_LIMIT));
     }
 
     @Test
     void malformedBlockReturnsPartialResultAndDecoderRemainsUsable() {
-        List<HpackDiagnostic> diagnostics = new ArrayList<>();
         HpackDecoder decoder = HpackDecoder.atConnectionStart(
-                HpackDecoderConfig.defaults(), diagnostics::add);
+                HpackDecoderConfig.defaults());
 
         HpackBlockAnalysis malformed = decoder.analyze(hex("8280"));
         HpackBlockAnalysis later = decoder.analyze(hex("82"));
@@ -154,7 +161,7 @@ class HpackDecoderTest {
         assertEquals(HpackContextCompleteness.PARTIAL, malformed.contextCompleteness());
         assertTrue(later.complete());
         assertEquals("GET", later.fields().get(0).valueUtf8());
-        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+        assertTrue(malformed.diagnostics().stream().anyMatch(diagnostic ->
                 diagnostic.reason() == HpackDiagnosticReason.MALFORMED_BLOCK));
     }
 
@@ -195,15 +202,21 @@ class HpackDecoderTest {
     }
 
     @Test
-    void listenerFailureLeavesContextPartialAndRethrowsCallerFailure() {
-        HpackDecoder decoder = HpackDecoder.atConnectionStart(
-                HpackDecoderConfig.defaults(), diagnostic -> {
-                    throw new IllegalStateException("sink failed");
-                });
+    void returnsImmutableDiagnosticsScopedToOneAnalysis() {
+        HpackDecoder decoder = HpackDecoder.atConnectionStart();
 
-        assertThrows(IllegalStateException.class, () -> decoder.analyze(hex("80")));
+        HpackBlockAnalysis malformed = decoder.analyze(hex("80"));
+        HpackBlockAnalysis valid = decoder.analyze(hex("82"));
+
+        assertEquals(2, malformed.diagnostics().size());
+        assertEquals(HpackDiagnosticReason.MALFORMED_BLOCK,
+                malformed.diagnostics().get(0).reason());
+        assertEquals(HpackDiagnosticReason.CONTEXT_BECAME_PARTIAL,
+                malformed.diagnostics().get(1).reason());
+        assertTrue(valid.diagnostics().isEmpty());
+        assertThrows(UnsupportedOperationException.class,
+                () -> malformed.diagnostics().add(malformed.diagnostics().get(0)));
         assertEquals(HpackContextCompleteness.PARTIAL, decoder.contextCompleteness());
-        assertEquals(0, decoder.dynamicTableSize());
     }
 
     @Test

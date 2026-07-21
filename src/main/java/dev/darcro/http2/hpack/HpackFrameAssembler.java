@@ -17,8 +17,8 @@ import java.util.OptionalInt;
  */
 public final class HpackFrameAssembler {
     private final HpackDecoder decoder;
-    private final HpackDiagnosticSink diagnosticSink;
     private final List<ByteSequence> fragments = new ArrayList<>();
+    private final List<HpackDiagnostic> diagnostics = new ArrayList<>();
     private HeaderBlockOrigin origin;
     private int streamId;
     private boolean endStream;
@@ -28,55 +28,37 @@ public final class HpackFrameAssembler {
     private boolean discarding;
 
     public HpackFrameAssembler() {
-        this(HpackDecoderConfig.defaults(), HpackDiagnosticSink.noop());
+        this(HpackDecoderConfig.defaults());
     }
 
     public HpackFrameAssembler(HpackDecoderConfig config) {
-        this(config, HpackDiagnosticSink.noop());
+        this(new HpackDecoder(config));
     }
 
-    public HpackFrameAssembler(HpackDecoderConfig config,
-                               HpackDiagnosticSink diagnosticSink) {
-        this(new HpackDecoder(config, diagnosticSink), diagnosticSink);
-    }
-
-    private HpackFrameAssembler(HpackDecoder decoder,
-                                HpackDiagnosticSink diagnosticSink) {
+    private HpackFrameAssembler(HpackDecoder decoder) {
         this.decoder = Objects.requireNonNull(decoder, "decoder");
-        this.diagnosticSink = Objects.requireNonNull(diagnosticSink, "diagnosticSink");
     }
 
     public static HpackFrameAssembler atConnectionStart() {
-        return atConnectionStart(HpackDecoderConfig.defaults(),
-                HpackDiagnosticSink.noop());
+        return atConnectionStart(HpackDecoderConfig.defaults());
     }
 
-    public static HpackFrameAssembler atConnectionStart(HpackDecoderConfig config,
-                                                         HpackDiagnosticSink sink) {
-        return new HpackFrameAssembler(HpackDecoder.atConnectionStart(config, sink), sink);
+    public static HpackFrameAssembler atConnectionStart(HpackDecoderConfig config) {
+        return new HpackFrameAssembler(HpackDecoder.atConnectionStart(config));
     }
 
     public static HpackFrameAssembler restore(HpackFrameAssemblerSnapshot snapshot,
                                               HpackDecoderConfig config)
             throws HpackSnapshotException {
-        return restore(snapshot, config, HpackDiagnosticSink.noop());
-    }
-
-    public static HpackFrameAssembler restore(HpackFrameAssemblerSnapshot snapshot,
-                                              HpackDecoderConfig config,
-                                              HpackDiagnosticSink sink)
-            throws HpackSnapshotException {
         Objects.requireNonNull(snapshot, "snapshot");
         Objects.requireNonNull(config, "config");
-        Objects.requireNonNull(sink, "sink");
-        HpackDecoder decoder = HpackDecoder.restore(snapshot.decoderSnapshot(), config,
-                sink);
+        HpackDecoder decoder = HpackDecoder.restore(snapshot.decoderSnapshot(), config);
         if (snapshot.incompleteBlock().length() > config.maxEncodedHeaderBlockSize()) {
             throw new HpackSnapshotException(HpackSnapshotErrorReason.CONFIGURATION_LIMIT,
                     -1, "Incomplete field block exceeds local configuration");
         }
 
-        HpackFrameAssembler assembler = new HpackFrameAssembler(decoder, sink);
+        HpackFrameAssembler assembler = new HpackFrameAssembler(decoder);
         if (snapshot.active()) {
             HeaderBlockOrigin restoredOrigin = snapshot.origin().orElse(null);
             int restoredPromisedStream = snapshot.promisedStreamId().orElse(0);
@@ -142,6 +124,7 @@ public final class HpackFrameAssembler {
 
     public HpackFrameAnalysis accept(Http2Frame frame) {
         Objects.requireNonNull(frame, "frame");
+        diagnostics.clear();
         if (discarding) {
             return acceptDiscarding(frame);
         }
@@ -182,7 +165,8 @@ public final class HpackFrameAssembler {
         if (!(frame instanceof ContinuationFrame continuation)) {
             emit(HpackDiagnosticReason.INTERLEAVED_FRAME, frame.streamId(),
                     "A field block was interrupted by another frame");
-            decoder.discardObservedContext("Incomplete field block was abandoned");
+            diagnostics.addAll(decoder.discardObservedContext(
+                    "Incomplete field block was abandoned"));
             clearBlock();
             if (frame instanceof HeadersFrame || frame instanceof PushPromiseFrame) {
                 return acceptIdle(frame);
@@ -193,7 +177,8 @@ public final class HpackFrameAssembler {
             emit(HpackDiagnosticReason.WRONG_STREAM_CONTINUATION,
                     continuation.streamId(),
                     "CONTINUATION belongs to a different stream");
-            decoder.discardObservedContext("Incomplete field block was abandoned");
+            diagnostics.addAll(decoder.discardObservedContext(
+                    "Incomplete field block was abandoned"));
             clearBlock();
             if (!continuation.endHeaders()) {
                 discarding = true;
@@ -212,7 +197,8 @@ public final class HpackFrameAssembler {
         if (frame instanceof ContinuationFrame continuation) {
             emit(HpackDiagnosticReason.UNEXPECTED_CONTINUATION,
                     continuation.streamId(), "CONTINUATION has no observed field-block start");
-            decoder.discardObservedContext("Unobserved field-block bytes were discarded");
+            diagnostics.addAll(decoder.discardObservedContext(
+                    "Unobserved field-block bytes were discarded"));
             if (!continuation.endHeaders()) {
                 discarding = true;
                 streamId = continuation.streamId();
@@ -265,7 +251,8 @@ public final class HpackFrameAssembler {
                                                  boolean endHeaders) {
         emit(HpackDiagnosticReason.RESOURCE_LIMIT, discardedStreamId,
                 "Encoded field block exceeds configured limit");
-        decoder.discardObservedContext("Oversized field block was not decoded");
+        diagnostics.addAll(decoder.discardObservedContext(
+                "Oversized field block was not decoded"));
         clearBlock();
         if (!endHeaders) {
             discarding = true;
@@ -279,6 +266,7 @@ public final class HpackFrameAssembler {
         try {
             HpackBlockAnalysis analysis = decoder.analyzeFragments(fragments,
                     encodedLength, completedStreamId);
+            diagnostics.addAll(analysis.diagnostics());
             DecodedHeaderBlock block = new DecodedHeaderBlock(origin, completedStreamId,
                     endStream, origin == HeaderBlockOrigin.PUSH_PROMISE
                             ? OptionalInt.of(promisedStreamId) : OptionalInt.empty(),
@@ -303,20 +291,14 @@ public final class HpackFrameAssembler {
 
     private void emit(HpackDiagnosticReason reason, int diagnosticStreamId,
                       String message) {
-        try {
-            diagnosticSink.accept(new HpackDiagnostic(reason, -1, -1,
-                    diagnosticStreamId, message));
-        } catch (RuntimeException exception) {
-            decoder.invalidateAfterListenerFailure();
-            clearBlock();
-            throw exception;
-        }
+        diagnostics.add(new HpackDiagnostic(reason, -1, -1,
+                diagnosticStreamId, message));
     }
 
     private HpackFrameAnalysis result(HpackFrameAnalysisStatus status,
                                       DecodedHeaderBlock block) {
         return new HpackFrameAnalysis(status, Optional.ofNullable(block),
-                decoder.contextCompleteness());
+                decoder.contextCompleteness(), diagnostics);
     }
 
     private static void validateRestoredAssembler(HpackFrameAssemblerSnapshot snapshot,

@@ -13,8 +13,8 @@ public final class HpackDecoder {
     private static final int STATIC_TABLE_LENGTH = HpackTables.STATIC_TABLE.length;
 
     private final HpackDecoderConfig config;
-    private final HpackDiagnosticSink diagnosticSink;
     private final List<HpackTables.Entry> dynamicTable = new ArrayList<>();
+    private final List<HpackDiagnostic> diagnostics = new ArrayList<>();
     private int dynamicTableSize;
     private int dynamicTableLimit = 4_096;
     private int maximumTableSize = 4_096;
@@ -24,24 +24,17 @@ public final class HpackDecoder {
     private int diagnosticStreamId = -1;
 
     public HpackDecoder() {
-        this(HpackDecoderConfig.defaults(), HpackDiagnosticSink.noop(),
-                HpackContextCompleteness.PARTIAL, false);
+        this(HpackDecoderConfig.defaults(), HpackContextCompleteness.PARTIAL, false);
     }
 
     public HpackDecoder(HpackDecoderConfig config) {
-        this(config, HpackDiagnosticSink.noop(), HpackContextCompleteness.PARTIAL,
-                false);
+        this(config, HpackContextCompleteness.PARTIAL, false);
     }
 
-    public HpackDecoder(HpackDecoderConfig config, HpackDiagnosticSink diagnosticSink) {
-        this(config, diagnosticSink, HpackContextCompleteness.PARTIAL, false);
-    }
-
-    private HpackDecoder(HpackDecoderConfig config, HpackDiagnosticSink diagnosticSink,
+    private HpackDecoder(HpackDecoderConfig config,
                          HpackContextCompleteness contextCompleteness,
                          boolean tableLimitKnown) {
         this.config = Objects.requireNonNull(config, "config");
-        this.diagnosticSink = Objects.requireNonNull(diagnosticSink, "diagnosticSink");
         this.contextCompleteness = Objects.requireNonNull(contextCompleteness,
                 "contextCompleteness");
         this.tableLimitKnown = tableLimitKnown;
@@ -49,12 +42,11 @@ public final class HpackDecoder {
     }
 
     public static HpackDecoder atConnectionStart() {
-        return atConnectionStart(HpackDecoderConfig.defaults(), HpackDiagnosticSink.noop());
+        return atConnectionStart(HpackDecoderConfig.defaults());
     }
 
-    public static HpackDecoder atConnectionStart(HpackDecoderConfig config,
-                                                  HpackDiagnosticSink diagnosticSink) {
-        HpackDecoder decoder = new HpackDecoder(config, diagnosticSink,
+    public static HpackDecoder atConnectionStart(HpackDecoderConfig config) {
+        HpackDecoder decoder = new HpackDecoder(config,
                 HpackContextCompleteness.OBSERVED_COMPLETE, true);
         decoder.maximumTableSize = 4_096;
         return decoder;
@@ -64,19 +56,11 @@ public final class HpackDecoder {
     public static HpackDecoder restore(HpackDecoderSnapshot snapshot,
                                        HpackDecoderConfig config)
             throws HpackSnapshotException {
-        return restore(snapshot, config, HpackDiagnosticSink.noop());
-    }
-
-    public static HpackDecoder restore(HpackDecoderSnapshot snapshot,
-                                       HpackDecoderConfig config,
-                                       HpackDiagnosticSink diagnosticSink)
-            throws HpackSnapshotException {
         Objects.requireNonNull(snapshot, "snapshot");
         Objects.requireNonNull(config, "config");
         validateSnapshotConfiguration(snapshot, config);
 
-        Objects.requireNonNull(diagnosticSink, "diagnosticSink");
-        HpackDecoder decoder = new HpackDecoder(config, diagnosticSink,
+        HpackDecoder decoder = new HpackDecoder(config,
                 snapshot.contextCompleteness(), snapshot.tableLimitKnown());
         decoder.dynamicTableLimit = snapshot.dynamicTableLimit();
         decoder.maximumTableSize = snapshot.maximumTableSize();
@@ -154,14 +138,18 @@ public final class HpackDecoder {
     }
 
     HpackBlockAnalysis analyzeFragments(List<ByteSequence> fragments, long totalLength) {
+        diagnostics.clear();
+        HpackBlockAnalysis analysis;
         if (totalLength > config.maxEncodedHeaderBlockSize()) {
             String message = "Encoded header block exceeds configured limit";
             emit(new HpackDiagnostic(HpackDiagnosticReason.RESOURCE_LIMIT, 0, -1,
                     -1, message));
             loseContext(true, message);
-            return incomplete(List.of(), 0);
+            analysis = incomplete(List.of(), 0);
+        } else {
+            analysis = decodeBlock(new Input(fragments, (int) totalLength));
         }
-        return decodeBlock(new Input(fragments, (int) totalLength));
+        return withDiagnostics(analysis);
     }
 
     HpackBlockAnalysis analyzeFragments(List<ByteSequence> fragments, long totalLength,
@@ -174,16 +162,10 @@ public final class HpackDecoder {
         }
     }
 
-    void discardObservedContext(String message) {
+    List<HpackDiagnostic> discardObservedContext(String message) {
+        diagnostics.clear();
         loseContext(true, message);
-    }
-
-    void invalidateAfterListenerFailure() {
-        dynamicTable.clear();
-        dynamicTableSize = 0;
-        contextCompleteness = HpackContextCompleteness.PARTIAL;
-        tableLimitKnown = false;
-        pendingMinimum = -1;
+        return List.copyOf(diagnostics);
     }
 
     private HpackBlockAnalysis decodeBlock(Input input) {
@@ -312,7 +294,7 @@ public final class HpackDecoder {
         }
         pendingMinimum = -1;
         return new HpackBlockAnalysis(HpackHeaderFields.copyOf(fields),
-                HpackBlockStatus.COMPLETE, omittedFields, contextCompleteness);
+                HpackBlockStatus.COMPLETE, omittedFields, contextCompleteness, List.of());
         } catch (HpackDecodingException exception) {
             HpackDiagnosticReason reason = isResourceError(exception.reason())
                     ? HpackDiagnosticReason.RESOURCE_LIMIT
@@ -434,7 +416,7 @@ public final class HpackDecoder {
     private HpackBlockAnalysis incomplete(List<HpackHeaderField> fields,
                                           int omittedFields) {
         return new HpackBlockAnalysis(HpackHeaderFields.copyOf(fields),
-                HpackBlockStatus.INCOMPLETE, omittedFields, contextCompleteness);
+                HpackBlockStatus.INCOMPLETE, omittedFields, contextCompleteness, List.of());
     }
 
     private static boolean isResourceError(HpackErrorReason reason) {
@@ -469,12 +451,12 @@ public final class HpackDecoder {
     private void emit(HpackDiagnostic diagnostic) {
         HpackDiagnostic contextual = diagnostic.streamId() < 0 && diagnosticStreamId >= 0
                 ? diagnostic.withStreamId(diagnosticStreamId) : diagnostic;
-        try {
-            diagnosticSink.accept(contextual);
-        } catch (RuntimeException exception) {
-            invalidateAfterListenerFailure();
-            throw exception;
-        }
+        diagnostics.add(contextual);
+    }
+
+    private HpackBlockAnalysis withDiagnostics(HpackBlockAnalysis analysis) {
+        return new HpackBlockAnalysis(analysis.fields(), analysis.status(),
+                analysis.omittedFieldCount(), analysis.contextCompleteness(), diagnostics);
     }
 
     private static void validateSnapshotConfiguration(HpackDecoderSnapshot snapshot,
