@@ -1,4 +1,4 @@
-package dev.darcro.extract;
+package dev.darcro.http2.extract;
 
 /** Categories of payload ranges not emitted as synchronized HTTP/2 frames. */
 public enum Http2ExtractionDiagnosticReason {

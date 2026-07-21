@@ -9,7 +9,7 @@ reassembly, TLS handling, direction tracking, response generation, or
 connection-fatal endpoint policy to the core library.
 
 Production code has no external dependencies. Payload extraction is in
-`dev.darcro.extract`, frame code is in `dev.darcro.http2.frame`, and stateful
+`dev.darcro.http2.extract`, frame code is in `dev.darcro.http2.frame`, and stateful
 HPACK code is in `dev.darcro.http2.hpack`.
 
 ## Architecture and invariants

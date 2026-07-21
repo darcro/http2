@@ -1,4 +1,4 @@
-package dev.darcro.extract;
+package dev.darcro.http2.extract;
 
 /** An ordered event emitted while extracting HTTP/2 frames from payload bytes. */
 public sealed interface Http2ExtractionEvent permits Http2ConnectionPrefaceExtracted,

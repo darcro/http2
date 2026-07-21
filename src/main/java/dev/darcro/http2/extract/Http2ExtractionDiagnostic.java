@@ -1,4 +1,4 @@
-package dev.darcro.extract;
+package dev.darcro.http2.extract;
 
 import java.util.Objects;
 

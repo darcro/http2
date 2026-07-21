@@ -1,4 +1,4 @@
-package dev.darcro.extract;
+package dev.darcro.http2.extract;
 
 /** Evidence used to establish the boundary of an extracted frame sequence. */
 public enum FrameBoundaryProvenance {

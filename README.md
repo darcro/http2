@@ -7,7 +7,7 @@ then supplies either ordered payload chunks or exact candidate frames. The
 library preserves raw evidence, reports diagnostics without becoming unusable,
 and records the provenance of extracted frames and decoded header fields.
 
-The single JAR exposes payload extraction under `dev.darcro.extract`, frame
+The single JAR exposes payload extraction under `dev.darcro.http2.extract`, frame
 APIs under `dev.darcro.http2.frame`, and HPACK APIs under
 `dev.darcro.http2.hpack`.
 

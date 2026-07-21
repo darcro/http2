@@ -1,4 +1,4 @@
-package dev.darcro.extract;
+package dev.darcro.http2.extract;
 
 /** Reports an exact HTTP/2 client connection preface. */
 public record Http2ConnectionPrefaceExtracted(long streamOffset)

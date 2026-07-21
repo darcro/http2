@@ -15,7 +15,7 @@ object.
 
 ## Payload extraction and synchronization
 
-`dev.darcro.extract.Http2FrameExtractor` accepts arbitrary payload chunks and
+`dev.darcro.http2.extract.Http2FrameExtractor` accepts arbitrary payload chunks and
 emits ordered callback events. It recognizes an exact client preface only at
 logical stream offset zero. Without a preface, it requires two consecutive,
 semantically valid standard frames (types 0–9) before establishing alignment.
