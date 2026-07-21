@@ -7,4 +7,11 @@ public record RstStreamFrame(int length, int flags, int streamId,
     public int type() {
         return Http2FrameTypes.RST_STREAM;
     }
+
+    @Override
+    public String toString() {
+        return FrameText.start("RstStreamFrame", this)
+                .append(", errorCode=").append(FrameText.hexUnsignedInt(errorCode))
+                .append(']').toString();
+    }
 }

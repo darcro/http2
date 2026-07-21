@@ -6,4 +6,11 @@ public record WindowUpdateFrame(int length, int flags, int streamId,
     public int type() {
         return Http2FrameTypes.WINDOW_UPDATE;
     }
+
+    @Override
+    public String toString() {
+        return FrameText.start("WindowUpdateFrame", this)
+                .append(", windowSizeIncrement=").append(windowSizeIncrement)
+                .append(']').toString();
+    }
 }

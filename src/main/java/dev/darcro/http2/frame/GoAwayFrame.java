@@ -7,4 +7,13 @@ public record GoAwayFrame(int length, int flags, int streamId, int lastStreamId,
     public int type() {
         return Http2FrameTypes.GOAWAY;
     }
+
+    @Override
+    public String toString() {
+        return FrameText.start("GoAwayFrame", this)
+                .append(", lastStreamId=").append(lastStreamId)
+                .append(", errorCode=").append(FrameText.hexUnsignedInt(errorCode))
+                .append(", debugData=").append(FrameText.hex(debugData))
+                .append(']').toString();
+    }
 }

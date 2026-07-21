@@ -14,4 +14,13 @@ public record DataFrame(int length, int flags, int streamId, ByteSequence data,
     public boolean padded() {
         return (flags & Http2Flags.PADDED) != 0;
     }
+
+    @Override
+    public String toString() {
+        return FrameText.start("DataFrame", this)
+                .append(", endStream=").append(endStream())
+                .append(", padded=").append(padded())
+                .append(", paddingLength=").append(paddingLength)
+                .append(", data=").append(FrameText.hex(data)).append(']').toString();
+    }
 }

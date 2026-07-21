@@ -43,6 +43,10 @@ all derived views share it. New frame implementations must preserve unsigned
 wire interpretation, validate only invariants local to that frame, and retain
 unknown extension payloads.
 
+Concrete frame `toString()` methods use `FrameText` for consistent header and
+bounded binary formatting. New binary fields must use the same capped hex
+preview rather than copying or rendering an unbounded payload into logs.
+
 The client connection preface is handled by the stateless
 `Http2ConnectionPreface`; it is not a synthetic frame type.
 

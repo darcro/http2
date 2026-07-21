@@ -100,6 +100,11 @@ that array unchanged for as long as the observation or frame is used. Use
 `observeOwned` when the library should make one defensive copy. Use `parse`
 when a malformed candidate should instead throw `ParseErrorException`.
 
+Every concrete frame provides a logging-oriented `toString()` containing its
+wire-header values and decoded frame-specific fields. Binary data, opaque data,
+debug data, and HPACK fragments are shown as lowercase hexadecimal capped at 64
+bytes; longer values include the number of omitted bytes.
+
 ## Validate the client preface
 
 The fixed 24-byte client connection preface is not an HTTP/2 frame.

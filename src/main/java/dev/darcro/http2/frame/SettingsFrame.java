@@ -16,4 +16,11 @@ public record SettingsFrame(int length, int flags, int streamId,
     public boolean ack() {
         return (flags & Http2Flags.ACK) != 0;
     }
+
+    @Override
+    public String toString() {
+        return FrameText.start("SettingsFrame", this)
+                .append(", ack=").append(ack())
+                .append(", settings=").append(settings).append(']').toString();
+    }
 }

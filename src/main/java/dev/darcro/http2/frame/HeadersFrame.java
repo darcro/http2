@@ -23,4 +23,16 @@ public record HeadersFrame(int length, int flags, int streamId,
     public boolean hasPriority() {
         return priority != null;
     }
+
+    @Override
+    public String toString() {
+        return FrameText.start("HeadersFrame", this)
+                .append(", endStream=").append(endStream())
+                .append(", endHeaders=").append(endHeaders())
+                .append(", padded=").append(padded())
+                .append(", paddingLength=").append(paddingLength)
+                .append(", priority=").append(priority)
+                .append(", headerBlockFragment=")
+                .append(FrameText.hex(headerBlockFragment)).append(']').toString();
+    }
 }
