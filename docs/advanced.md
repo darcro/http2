@@ -3,13 +3,42 @@
 ## Analysis boundary
 
 The library begins at the HTTP/2 application layer. It intentionally does not
-reassemble TCP, decrypt TLS, find frame boundaries in arbitrary byte streams,
-correlate the two directions, enforce endpoint protocol actions, or generate
-HTTP/2 responses. Those concerns are handled by the capture pipeline.
+reassemble TCP, handle retransmissions, decrypt TLS, correlate the two
+directions, enforce endpoint protocol actions, or generate HTTP/2 responses.
+Those concerns are handled by the capture pipeline.
 
-The frame parser expects an exact candidate frame. The HPACK assembler expects
-typed frames for one direction in their observed order. Neither API treats a
-diagnostic as a reason to permanently disable the object.
+The extractor accepts ordered payload bytes for one direction and finds likely
+frame boundaries. The frame parser expects an exact candidate frame. The HPACK
+assembler expects typed frames for one direction in their observed order. None
+of these APIs treats a diagnostic as a reason to permanently disable the
+object.
+
+## Payload extraction and synchronization
+
+`dev.darcro.extract.Http2FrameExtractor` accepts arbitrary payload chunks and
+emits ordered callback events. It recognizes an exact client preface only at
+logical stream offset zero. Without a preface, it requires two consecutive,
+semantically valid standard frames (types 0–9) before establishing alignment.
+Extension types remain valid after alignment but are deliberately too weak to
+confirm a mid-stream boundary.
+
+Mid-stream extraction is necessarily probabilistic because arbitrary payload
+bytes can resemble frame headers. Every extracted frame records whether its
+current alignment came from the connection preface or a confirmed standard
+frame sequence. There is no input-gap marker and silent capture loss cannot be
+detected reliably.
+
+While aligned, a semantically malformed candidate is emitted as
+`Http2FrameCandidateRejected`; extraction then resumes one byte after its
+suspected start and requires a new two-frame confirmation. A declared length
+over the configured parser maximum causes immediate resynchronization rather
+than retention of the claimed payload.
+
+Callbacks are synchronous and non-reentrant. Event observations contain owned
+frame bytes, so callback recipients may retain them. Callback exceptions
+propagate after the corresponding state transition; undelivered confirmed
+events and buffered input remain available on a later call. `finish()` reports
+trailing incomplete data and makes the extractor terminal.
 
 ## Frame observation and strict parsing
 

@@ -1,14 +1,15 @@
 # HTTP/2 Passive Analysis Library
 
-A dependency-free Java 17 library for inspecting HTTP/2 frames and HPACK
-header blocks from captured traffic. It is designed for passive analysis: the
-caller reconstructs TCP, separates connection directions, and supplies exact
-candidate frames in observation order. The library preserves raw evidence,
-reports diagnostics without becoming unusable, and records the provenance of
-decoded header names and values.
+A dependency-free Java 17 library for extracting and inspecting HTTP/2 frames
+and HPACK header blocks from captured traffic. It is designed for passive
+analysis: the caller reconstructs TCP and separates connection directions,
+then supplies either ordered payload chunks or exact candidate frames. The
+library preserves raw evidence, reports diagnostics without becoming unusable,
+and records the provenance of extracted frames and decoded header fields.
 
-The single JAR exposes frame APIs under `dev.darcro.http2.frame` and HPACK APIs
-under `dev.darcro.http2.hpack`.
+The single JAR exposes payload extraction under `dev.darcro.extract`, frame
+APIs under `dev.darcro.http2.frame`, and HPACK APIs under
+`dev.darcro.http2.hpack`.
 
 ```java
 Http2FrameParser parser = new Http2FrameParser();
@@ -22,15 +23,15 @@ observation.frame().ifPresent(frame -> {
 });
 ```
 
-`observe` is the normal passive-analysis entry point. It returns the raw bytes,
-the frame header when available, an optional typed frame, and diagnostics.
-Strict `parse` methods remain available when rejection on malformed input is
-preferred.
+Use `Http2FrameExtractor` when input arrives as ordered payload chunks. For an
+already isolated candidate, `observe` returns its raw bytes, frame header when
+available, optional typed frame, and diagnostics. Strict `parse` methods remain
+available when rejection on malformed input is preferred.
 
 ## Documentation
 
-- [Simple usage guide](docs/usage.md) — frame observation, HPACK assembly,
-  diagnostics, and header provenance.
+- [Simple usage guide](docs/usage.md) — payload extraction, frame observation,
+  HPACK assembly, diagnostics, and header provenance.
 - [Advanced guide](docs/advanced.md) — limits, incomplete capture context,
   recovery semantics, snapshots, and ownership.
 - [Developer guide](docs/development.md) — architecture, invariants, testing,

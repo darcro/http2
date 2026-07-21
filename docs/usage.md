@@ -2,7 +2,9 @@
 
 This library analyzes HTTP/2 application-layer data. TCP reassembly, TLS
 decryption, connection identification, and separation of the two connection
-directions belong to the caller. Supply one exact candidate frame at a time.
+directions belong to the caller. Supply either ordered payload chunks for one
+direction to the extractor or one exact candidate frame at a time to the
+parser.
 
 ## Add the library
 
@@ -21,6 +23,47 @@ directions belong to the caller. Supply one exact candidate frame at a time.
 
 For a checkout, run `mvn clean install`. The library requires Java 17 and has
 no runtime dependencies.
+
+## Extract frames from payload chunks
+
+Use one `Http2FrameExtractor` for each connection direction. Input must already
+be ordered, deduplicated, contiguous TCP payload bytes, but chunks may split a
+preface, frame header, or payload anywhere and may contain multiple frames.
+
+```java
+HpackFrameAssembler assembler = new HpackFrameAssembler();
+
+Http2FrameExtractor extractor = new Http2FrameExtractor(event -> {
+    if (event instanceof Http2ConnectionPrefaceExtracted preface) {
+        System.out.println("preface at " + preface.streamOffset());
+    } else if (event instanceof Http2FrameExtracted extracted) {
+        System.out.println("frame at " + extracted.streamOffset()
+                + " via " + extracted.boundaryProvenance());
+        extracted.observation().frame().ifPresent(assembler::accept);
+    } else if (event instanceof Http2FrameCandidateRejected rejected) {
+        System.out.println("rejected candidate at " + rejected.streamOffset());
+        rejected.observation().diagnostics().forEach(System.out::println);
+    } else if (event instanceof Http2ExtractionDiagnostic diagnostic) {
+        System.out.println(diagnostic);
+    }
+});
+
+extractor.accept(firstPayloadChunk);
+extractor.accept(nextPayloadChunk, offset, length);
+extractor.finish();
+```
+
+An exact client connection preface at stream offset zero establishes frame
+alignment immediately. Otherwise the extractor waits for two consecutive,
+valid standard frames before emitting them. This conservative confirmation
+reduces false matches when capture starts inside a frame. Unknown extension
+frames are emitted after alignment but do not establish it.
+
+Events are delivered synchronously in stream order. Extracted and rejected
+observations own their bytes and may be retained after the callback. A malformed
+candidate encountered after alignment is reported, then the extractor searches
+for a new two-frame confirmation. Call `finish()` to report incomplete trailing
+data; no further input is accepted afterward.
 
 ## Observe a frame
 

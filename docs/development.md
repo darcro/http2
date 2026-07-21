@@ -8,11 +8,28 @@ mid-connection captures. It is not an endpoint protocol stack. Do not add TCP
 reassembly, TLS handling, direction tracking, response generation, or
 connection-fatal endpoint policy to the core library.
 
-Production code has no external dependencies. Frame code is in
-`dev.darcro.http2.frame`; stateful HPACK code is in
-`dev.darcro.http2.hpack`.
+Production code has no external dependencies. Payload extraction is in
+`dev.darcro.extract`, frame code is in `dev.darcro.http2.frame`, and stateful
+HPACK code is in `dev.darcro.http2.hpack`.
 
 ## Architecture and invariants
+
+### Payload extraction
+
+`Http2FrameExtractor` owns one direction's ordered payload buffer. Preface
+alignment is exact; mid-stream alignment requires two adjacent valid standard
+frames. Unknown extension frames must never establish synchronization.
+
+Search candidates are scheduled by the byte offset at which enough input will
+exist to evaluate them. Avoid rescanning the complete retained buffer for every
+chunk. Discarded search prefixes are coalesced into offset diagnostics, and
+only bytes needed by incomplete candidates or the final partial header remain
+buffered after processing.
+
+All frame observations emitted to callbacks own exact frame bytes. State and
+buffer consumption must be committed before invoking a callback so an exception
+cannot duplicate an event. Malformed candidates are emitted as evidence, then
+search restarts at the following byte.
 
 ### Frame layer
 
@@ -101,6 +118,8 @@ Tests are under `src/test/java` and include RFC HPACK examples plus captured
 real-world frame data. Changes should cover:
 
 - valid and malformed wire encodings;
+- preface and frame extraction across arbitrary payload chunk boundaries;
+- conservative mid-stream synchronization and reacquisition;
 - exact boundary and unsigned-value cases;
 - zero-copy and owned-copy behavior;
 - continuation fragmentation and sequence recovery;
